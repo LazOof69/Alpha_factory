@@ -44,6 +44,18 @@ select = [
     "SIM", # flake8-simplify
 ]
 
+[tool.ruff.lint.isort]
+# Local modules under feasibility/scripts/. Without this, ruff treats them
+# as third-party and demands a blank line separating them from polars/httpx.
+known-first-party = [
+    "binance_client",
+    "fetch_funding",
+    "fetch_klines",
+    "qc",
+    "run_archive",
+    "schema",
+]
+
 [tool.ruff.format]
 quote-style = "double"
 
