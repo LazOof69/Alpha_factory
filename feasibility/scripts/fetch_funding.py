@@ -40,11 +40,15 @@ def _rows_to_df(rows: list[dict], canonical_symbol: str) -> pl.DataFrame:
         return pl.DataFrame(schema=FUNDING_SCHEMA)
 
     ingested_at = datetime.now(tz=UTC)
+    # Keep numeric fields as strings until polars cast — Binance occasionally
+    # returns "" for markPrice on edge-case early rows (and rarely for
+    # fundingRate). polars `strict=False` cast turns those into null cleanly,
+    # which is the right semantics: missing → null, never silent zero.
     df = pl.DataFrame({
         "symbol": [canonical_symbol] * len(rows),
         "funding_time_ms": [int(r["fundingTime"]) for r in rows],
-        "funding_rate": [float(r["fundingRate"]) for r in rows],
-        "mark_price": [float(r["markPrice"]) for r in rows],
+        "funding_rate_raw": [r.get("fundingRate") for r in rows],
+        "mark_price_raw": [r.get("markPrice") for r in rows],
     })
 
     df = df.with_columns(
@@ -55,9 +59,21 @@ def _rows_to_df(rows: list[dict], canonical_symbol: str) -> pl.DataFrame:
         epoch_ms_to_utc_us(pl.col("funding_time_ms"))
             .dt.truncate("1s")
             .alias("funding_time"),
+        pl.col("funding_rate_raw").cast(pl.Float64, strict=False).alias("funding_rate"),
+        pl.col("mark_price_raw").cast(pl.Float64, strict=False).alias("mark_price"),
         pl.lit(ingested_at).alias("ingested_at"),
         pl.lit(SOURCE_FUNDING).alias("source"),
-    ).drop("funding_time_ms")
+    ).drop(["funding_time_ms", "funding_rate_raw", "mark_price_raw"])
+
+    # Drop rows with null funding_rate — that's the primary field and a null
+    # would silently zero out PnL in the carry backtest. Log and surface count
+    # so we know it happened (rare but possible).
+    n_total = df.height
+    df = df.filter(pl.col("funding_rate").is_not_null())
+    n_dropped = n_total - df.height
+    if n_dropped > 0:
+        log.warning("dropped %d funding rows with null funding_rate (symbol=%s)",
+                    n_dropped, canonical_symbol)
 
     return conform(df, FUNDING_SCHEMA)
 
