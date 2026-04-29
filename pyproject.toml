@@ -1,0 +1,59 @@
+[project]
+name = "alpha-factory"
+version = "0.1.0"
+description = "Personal quant alpha factory for crypto. Currently in Feasibility Study (FS) phase."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+
+# FS-phase dependencies only. Production deps (vectorbt, mlfinlab, nautilus-trader)
+# will be added after PROJECT.md is written and Phase A starts.
+dependencies = [
+    "polars>=0.20",          # main dataframe lib (5-10x faster than pandas for our data sizes)
+    "pyarrow>=15",           # parquet I/O
+    "duckdb>=0.10",          # ad-hoc SQL on parquet without loading
+    "httpx>=0.27",            # Binance public REST API
+    "numpy>=1.26",
+    "scipy>=1.12",            # stats (Sharpe SE, t-tests for regime split)
+    "matplotlib>=3.8",        # sanity charts
+    "openpyxl>=3.1",          # xlsx output (paired with xlsx skill)
+    "tqdm>=4.66",             # progress bars on long historical fetches
+    "python-dotenv>=1.0",     # any future API keys (Binance public endpoints don't need auth)
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4",
+    "pytest>=8.0",
+    "ipykernel>=6.29",        # jupyter kernel
+    "jupyter>=1.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["feasibility/scripts", "tests"]
+python_files = ["test_*.py", "*_test.py"]
+
+# Tell uv this is not a buildable package — just a dependency manifest.
+# We're not shipping to PyPI; FS phase has no `src/` package yet.
+# After Phase A starts and src/alpha_factory/ exists, we'll switch this
+# to `package = true` and add the build-system back.
+[tool.uv]
+package = false

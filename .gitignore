@@ -1,0 +1,54 @@
+# ── Python ─────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# ── Data archives (large binary) ───────────────────
+feasibility/data/
+data/
+*.parquet
+*.h5
+*.feather
+# allow result CSVs (small, tracked)
+!feasibility/results/*.csv
+
+# ── Notebooks ──────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── IDE ────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Env / secrets ──────────────────────────────────
+.env
+.env.local
+*.key
+*.pem
+secrets/
+
+# ── OS ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Claude Code ────────────────────────────────────
+.claude/settings.local.json
+.claude/plans/
+
+# ── uv ─────────────────────────────────────────────
+# Track uv.lock (so others reproduce env)
+# but ignore the venv it creates
+.python-version.local
+
+# ── Logs ───────────────────────────────────────────
+*.log
+logs/

@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv pip list)",
+      "Bash(uv pip list *)",
+      "Bash(uv pip show *)",
+      "Bash(uv tree)",
+      "Bash(uv tree *)",
+      "Bash(uv lock --check)",
+      "Bash(uv --version)",
+      "Bash(ruff check)",
+      "Bash(ruff check *)",
+      "Bash(ruff format --check *)",
+      "Bash(ruff --version)",
+      "Bash(pytest --collect-only)",
+      "Bash(pytest --collect-only *)",
+      "Bash(pytest --version)"
+    ]
+  }
+}
