@@ -16,5 +16,19 @@
       "Bash(pytest --collect-only *)",
       "Bash(pytest --version)"
     ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/skill_routing.py",
+            "shell": "bash",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }

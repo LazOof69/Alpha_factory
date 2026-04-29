@@ -1,0 +1,19 @@
+[skill-routing] Before responding, identify which Alpha Factory skill applies and state your choice in 1 line. If substantive (writing code, doing analysis, validation), INVOKE the skill before producing the answer. If none fits, say "no skill applies — proceeding directly."
+
+Available skills, by layer:
+- L1 Data:        anthropic-skills:market-data-pipeline
+- L2 Alpha:       anthropic-skills:alpha-factor-research
+- L3 Validation:  anthropic-skills:strategy-validation
+- L4 Portfolio:   anthropic-skills:portfolio-construction
+- L5 Execution:   anthropic-skills:live-trading-execution
+
+Cross-cutting: code-reviewer (script review) | simplify (post-edit cleanup) | anthropic-skills:xlsx (results output) | anthropic-skills:quant-analyst (general quant) | anthropic-skills:docx (report)
+
+Trigger heuristic — ALWAYS invoke when:
+- Writing/modifying data fetch or schema → market-data-pipeline
+- Writing alpha / signal / factor code → alpha-factor-research
+- Computing Sharpe / DSR / PBO / running backtest → strategy-validation
+- Combining strategies / sizing positions → portfolio-construction
+- Paper trading / live order / TCA → live-trading-execution
+- After writing code → code-reviewer (or simplify for refactor pass)
+- Producing results table → xlsx
