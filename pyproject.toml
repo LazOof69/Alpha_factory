@@ -15,7 +15,8 @@ dependencies = [
     "numpy>=1.26",
     "scipy>=1.12",            # stats (Sharpe SE, t-tests for regime split)
     "matplotlib>=3.8",        # sanity charts
-    "openpyxl>=3.1",          # xlsx output (paired with xlsx skill)
+    "openpyxl>=3.1",          # xlsx read/general
+    "xlsxwriter>=3.2",        # polars write_excel backend (needed for FS reports)
     "tqdm>=4.66",             # progress bars on long historical fetches
     "python-dotenv>=1.0",     # any future API keys (Binance public endpoints don't need auth)
 ]
