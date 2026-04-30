@@ -39,6 +39,16 @@ DEFAULT_FEE_BPS = 16.0    # entry round-trip: perp 4 + spot 10 + slippage 2
 
 DAYS_PER_YEAR = 365  # crypto trades 24/7
 
+# V2 regime detection thresholds. Calibrated to the economic break-even of
+# transaction cost: a round-trip exit+reentry costs 16 bp; avoiding a single
+# week of negative funding only pays off if cumulative 7d funding ≤ -16 bp,
+# i.e. 7d MA ≤ -16/21 ≈ -0.76 bp/8h. Threshold rounded to -1 bp/8h, with
+# hysteresis at re-entry to avoid flip-flopping (re-enter at +0.5 bp/8h).
+# Funding distribution (from analyze_funding): p01 = -2.0 bp, median ≈ +1 bp.
+EXIT_FUNDING_7DMA = -0.0001      # 7d MA < -1 bp/8h → exit
+REENTRY_FUNDING_7DMA = 0.00005   # 7d MA > +0.5 bp/8h → re-enter
+LOOKBACK_SETTLEMENTS = 21        # 7 days × 3 settlements/day
+
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -178,14 +188,15 @@ def _hit_rate(returns: pl.Series) -> float:
     return float((r > 0).mean())
 
 
-def regime_stats(bars: pl.DataFrame, symbol: str) -> list[dict]:
-    """Per-regime stats: full / per-year / ETF pre vs post."""
+def regime_stats(bars: pl.DataFrame, symbol: str, variant: str = "V1") -> list[dict]:
+    """Per-regime stats: full / per-year / ETF pre vs post. `variant` is V1 / V2."""
     daily = aggregate_to_daily(bars)
     rows: list[dict] = []
 
     def pack(label: str, sub: pl.DataFrame) -> dict:
         return {
             "symbol": symbol,
+            "variant": variant,
             "regime": label,
             "n_days": sub.height,
             "sharpe": _sharpe(sub["daily_ret"], DAYS_PER_YEAR),
@@ -211,33 +222,145 @@ def regime_stats(bars: pl.DataFrame, symbol: str) -> list[dict]:
     return rows
 
 
-def render_md(stats: list[dict], capital: float, fee_bps: float) -> str:
+# ---------------------------------------------------------------------------
+# V2: regime detection on funding 7d MA
+# ---------------------------------------------------------------------------
+
+
+def apply_v2_regime(
+    bars: pl.DataFrame,
+    capital: float,
+    fee_bps: float,
+) -> tuple[pl.DataFrame, int]:
+    """Layer regime detection on top of V1 bars. Returns (bars_v2, n_transitions).
+
+    Logic (point-in-time correct — uses only past funding):
+      - At every settlement bar, compute rolling 7d MA of funding_income.
+      - If state == active and 7d MA < EXIT_FUNDING_7DMA  → exit
+        If state == exited and 7d MA > REENTRY_FUNDING_7DMA → re-enter
+      - Between settlements, regime state is forward-filled.
+      - Each transition (active↔exited) pays a one-way cost of `fee_bps / 2`
+        bp on `capital`, charged as a return hit on the transition bar.
+      - When `regime == 0` (exited), strategy_ret is forced to 0.
+    """
+    settle = (
+        bars.with_row_index("idx")
+        .filter(pl.col("funding_income") != 0.0)
+        .with_columns(
+            funding_7dma=pl.col("funding_income").rolling_mean(
+                window_size=LOOKBACK_SETTLEMENTS, min_samples=LOOKBACK_SETTLEMENTS
+            )
+        )
+        .select(["open_time", "funding_7dma"])
+    )
+
+    # Walk settlements deciding regime state — pure Python state machine.
+    regime_at_settle: dict = {}
+    current = 1  # start active at first bar
+    n_transitions = 0
+    for row in settle.iter_rows(named=True):
+        ma = row["funding_7dma"]
+        new = current
+        if ma is not None:
+            if current == 1 and ma < EXIT_FUNDING_7DMA:
+                new = 0
+            elif current == 0 and ma > REENTRY_FUNDING_7DMA:
+                new = 1
+        if new != current:
+            n_transitions += 1
+        regime_at_settle[row["open_time"]] = new
+        current = new
+
+    # Forward-fill regime to every bar; mark transition bars for fee deduction.
+    times = bars["open_time"].to_list()
+    states: list[int] = []
+    transition_cost_per_bar: list[float] = []
+    one_way_cost_return = (fee_bps / 2.0) / 10000.0  # 8 bp as a fractional return
+    current = 1
+    for t in times:
+        if t in regime_at_settle:
+            new_state = regime_at_settle[t]
+            transition_cost_per_bar.append(-one_way_cost_return if new_state != current else 0.0)
+            current = new_state
+        else:
+            transition_cost_per_bar.append(0.0)
+        states.append(current)
+
+    bars = bars.with_columns(
+        regime_v2=pl.Series(states),
+        transition_cost=pl.Series(transition_cost_per_bar),
+    )
+    bars = bars.with_columns(
+        # Replace strategy_ret in-place: zero out PnL when exited, deduct
+        # transition costs at switch bars.
+        strategy_ret=(pl.col("strategy_ret") * pl.col("regime_v2"))
+            + pl.col("transition_cost"),
+    )
+    # Re-build equity from updated returns; same one-time entry haircut as V1.
+    initial = capital * (1.0 - fee_bps / 10000.0)
+    bars = bars.with_columns(
+        equity=initial * (1.0 + pl.col("strategy_ret")).cum_prod(),
+    )
+    return bars, n_transitions
+
+
+def run_v2_carry_backtest(
+    symbol: str,
+    capital: float = DEFAULT_CAPITAL,
+    fee_bps: float = DEFAULT_FEE_BPS,
+) -> tuple[pl.DataFrame, int]:
+    """V2 carry — V1 bars + regime detection."""
+    bars = run_carry_backtest(symbol, capital, fee_bps)
+    return apply_v2_regime(bars, capital, fee_bps)
+
+
+def render_md(
+    stats: list[dict],
+    capital: float,
+    fee_bps: float,
+    transitions_summary: dict[str, int] | None = None,
+) -> str:
     lines = [
-        "# Carry Backtest — Study 1 V1 (always-on, no regime detection)\n",
+        "# Carry Backtest — Study 1 (V1 always-on vs V2 regime-detection)\n",
         f"Capital: ${capital:.0f} ($500 long spot + $500 short perp, delta-neutral).",
-        f"Entry cost: {fee_bps:.0f} bp round-trip; no exit cost (always-on).",
+        f"Entry cost: {fee_bps:.0f} bp round-trip.",
+        f"V2 exit threshold: funding 7d MA < {EXIT_FUNDING_7DMA*1e4:+.1f} bp/8h",
+        f"V2 re-entry threshold: funding 7d MA > {REENTRY_FUNDING_7DMA*1e4:+.1f} bp/8h",
+        f"V2 per-transition cost: {fee_bps/2:.1f} bp one-way",
         "",
-        "| symbol | regime | n_days | Sharpe | ann.return | max DD | hit rate |",
-        "|---|---|---|---|---|---|---|",
     ]
-    # Sort: full first, then years ascending, then ETF labels last.
+    if transitions_summary:
+        lines.append("## V2 regime transitions")
+        for k, v in transitions_summary.items():
+            lines.append(f"- {k}: **{v}** transitions")
+        lines.append("")
+
+    lines.extend([
+        "## Metrics",
+        "",
+        "| symbol | variant | regime | n_days | Sharpe | ann.return | max DD | hit rate |",
+        "|---|---|---|---|---|---|---|---|",
+    ])
+
     def sort_key(r: dict) -> tuple:
         sym = r["symbol"]
+        var = r.get("variant", "V1")
         reg = r["regime"]
+        var_order = 0 if var == "V1" else 1
         if reg == "full":
-            return (sym, 0, 0)
+            return (sym, var_order, 0, 0)
         if reg.startswith("year_"):
-            return (sym, 1, int(reg[5:]))
+            return (sym, var_order, 1, int(reg[5:]))
         if reg == "pre_ETF":
-            return (sym, 2, 0)
+            return (sym, var_order, 2, 0)
         if reg == "post_ETF":
-            return (sym, 2, 1)
-        return (sym, 9, 0)
+            return (sym, var_order, 2, 1)
+        return (sym, var_order, 9, 0)
 
     for r in sorted(stats, key=sort_key):
         lines.append(
-            f"| {r['symbol']} | {r['regime']} | {r['n_days']} | "
-            f"{r['sharpe']:+.3f} | {r['ann_return_pct']:+.2f}% | "
+            f"| {r['symbol']} | {r.get('variant', 'V1')} | {r['regime']} | "
+            f"{r['n_days']} | {r['sharpe']:+.3f} | {r['ann_return_pct']:+.2f}% | "
             f"{r['max_dd_pct']:.2f}% | {r['hit_rate_pct']:.1f}% |"
         )
     return "\n".join(lines) + "\n"
@@ -262,17 +385,26 @@ def main() -> int:
 
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     all_stats: list[dict] = []
-    daily_curves: dict[str, pl.DataFrame] = {}
+    daily_curves: dict[tuple[str, str], pl.DataFrame] = {}
+    transitions: dict[str, int] = {}
 
     for sym in symbols:
-        log.info("backtesting %s", sym)
-        bars = run_carry_backtest(sym, args.capital, args.fee_bps)
-        log.info("  %d bars, equity $%.2f → $%.2f",
-                 bars.height, args.capital, bars["equity"].last())
-        all_stats.extend(regime_stats(bars, sym))
-        daily_curves[sym] = aggregate_to_daily(bars)
+        log.info("backtesting %s V1", sym)
+        bars_v1 = run_carry_backtest(sym, args.capital, args.fee_bps)
+        log.info("  V1: %d bars, equity $%.2f → $%.2f",
+                 bars_v1.height, args.capital, bars_v1["equity"].last())
+        all_stats.extend(regime_stats(bars_v1, sym, variant="V1"))
+        daily_curves[(sym, "V1")] = aggregate_to_daily(bars_v1)
 
-    print(render_md(all_stats, args.capital, args.fee_bps))
+        log.info("backtesting %s V2", sym)
+        bars_v2, n_trans = run_v2_carry_backtest(sym, args.capital, args.fee_bps)
+        transitions[sym] = n_trans
+        log.info("  V2: %d transitions, equity $%.2f → $%.2f",
+                 n_trans, args.capital, bars_v2["equity"].last())
+        all_stats.extend(regime_stats(bars_v2, sym, variant="V2"))
+        daily_curves[(sym, "V2")] = aggregate_to_daily(bars_v2)
+
+    print(render_md(all_stats, args.capital, args.fee_bps, transitions))
 
     xlsx_path = (
         Path(args.xlsx) if args.xlsx
@@ -282,11 +414,10 @@ def main() -> int:
 
     stats_df = pl.DataFrame(all_stats)
     stats_df.write_excel(workbook=str(xlsx_path), worksheet="stats", autofit=True)
-    for sym, daily in daily_curves.items():
-        # Excel doesn't like tz-aware; convert date column to plain date.
+    for (sym, variant), daily in daily_curves.items():
         daily.write_excel(
             workbook=str(xlsx_path),
-            worksheet=f"daily_{sym}",
+            worksheet=f"daily_{sym}_{variant}",
             autofit=True,
         )
     log.info("wrote %s", xlsx_path)
