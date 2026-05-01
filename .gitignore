@@ -12,7 +12,8 @@ dist/
 
 # ── Data archives (large binary) ───────────────────
 feasibility/data/
-data/
+# Root-anchored to NOT match `src/alpha_factory/data/` (the L1 module).
+/data/
 *.parquet
 *.h5
 *.feather
