@@ -46,9 +46,11 @@ select = [
 ]
 
 [tool.ruff.lint.isort]
-# Local modules under feasibility/scripts/. Without this, ruff treats them
-# as third-party and demands a blank line separating them from polars/httpx.
+# Phase A production package + Phase 0 feasibility flat modules. Without
+# this, ruff treats them as third-party and demands a blank line
+# separating them from polars/httpx.
 known-first-party = [
+    "alpha_factory",
     "binance_client",
     "fetch_funding",
     "fetch_klines",
