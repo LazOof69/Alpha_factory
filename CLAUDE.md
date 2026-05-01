@@ -155,6 +155,7 @@ See `PROJECT.md` "Decisions Log". Key ones:
 | Polars `write_excel` chokes on tz-aware datetime | Cast to plain `Date` before xlsx write |
 | Ruff treats local modules as 3rd-party without config | Add `known-first-party` in `pyproject.toml` |
 | Bash on Windows swallows interactive CLI output (e.g., `npx`) | Use PowerShell for interactive CLIs |
+| Editable install (`package = true` + hatchling) writes a `.pth` file containing the project's absolute path; Python's `site.py` reads `.pth` files using the system codec (cp950 on TW Windows). With our project at `OneDrive\桌面\...\財經自研\Alpha_factory`, the Chinese bytes in the `.pth` crash `init_import_site` before any code runs. PEP 660 explicitly requires `.pth` content to be ASCII. | Keep `[tool.uv] package = false`; rely on `pythonpath = ["src"]` in `[tool.pytest.ini_options]` for tests; for ad-hoc Python set `$env:PYTHONPATH = "src"` before invocation. **Long-term fix: relocate project to ASCII-only path** (`C:\Users\butte\projects\Alpha_factory`) — also escapes OneDrive sync of `.venv` and is faster. |
 
 ## What to ASK Before Doing
 
