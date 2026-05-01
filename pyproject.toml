@@ -63,20 +63,10 @@ quote-style = "double"
 [tool.pytest.ini_options]
 testpaths = ["feasibility/scripts", "tests"]
 python_files = ["test_*.py", "*_test.py"]
-# Make `import alpha_factory` work without an editable install (see the
-# [tool.uv] comment above for why we can't use editable on a Chinese path).
-pythonpath = ["src"]
 
-# Phase A onwards: src/alpha_factory/ acts as an importable package via
-# PYTHONPATH (configured per-tool below), NOT an editable install. Editable
-# install would write a .pth file containing this project's absolute path
-# into site-packages, but PEP 660 requires .pth contents be ASCII — and
-# this project lives at a path with non-ASCII characters
-# (`OneDrive\桌面\...\財經自研\`), which Python's site.py reads using cp950
-# on Taiwan-locale Windows and crashes during `init_import_site`.
-#
-# Until the project is relocated to an ASCII-only path, we treat this as a
-# non-package and configure each tool (pytest, etc.) to prepend src/ to
-# sys.path independently.
-[tool.uv]
-package = false
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/alpha_factory"]

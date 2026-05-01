@@ -43,6 +43,7 @@ desktop.ini
 # ── Claude Code ────────────────────────────────────
 .claude/settings.local.json
 .claude/plans/
+.claude/worktrees/
 
 # ── uv ─────────────────────────────────────────────
 # Track uv.lock (so others reproduce env)
