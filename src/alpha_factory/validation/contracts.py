@@ -42,8 +42,11 @@ Why callables here, not dataclasses:
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 from collections import Counter
 from datetime import timedelta
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -57,6 +60,8 @@ __all__ = [
     "SALT_REGIME_PERTURB",
     "AmbiguousPeriodicityError",
     "ArchiveState",
+    "canonical_params_hash",
+    "canonical_params_json",
     "get_archive_state",
     "infer_periodicity",
     "make_rng",
@@ -219,6 +224,109 @@ def validate_equity_curve(curve: pl.DataFrame) -> None:
             "EQUITY_CURVE cumulative_pnl inconsistent with equity "
             "(must equal equity[t] - equity[0])"
         )
+
+
+# ── canonical_params_hash ────────────────────────────────────────────────
+
+
+def _canonicalize(value: Any) -> Any:
+    """Recursive coerce a params-tree value to canonical-JSON-safe form.
+
+    Rules (BLOCKING per A.4.8 spine debate critique #3):
+        - dict: keys must be str; recurse on values
+        - list: recurse on each element
+        - bool: pass through (must be checked BEFORE int -- in Python
+          `isinstance(True, int)` is True, so bool would otherwise be
+          coerced to float)
+        - int / float: coerce to float; reject NaN / +-Inf
+        - str / None: pass through
+        - tuple / set / numpy / unknown types: REJECTED (raise ValueError)
+
+    Numeric coercion to float ensures `1` and `1.0` produce the same
+    hash even when callers drift between np.int64 / int / float.
+    """
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            if not isinstance(k, str):
+                raise ValueError(
+                    f"params dict keys must be str, got {type(k).__name__} {k!r}",
+                )
+            out[k] = _canonicalize(v)
+        return out
+    if isinstance(value, list):
+        return [_canonicalize(item) for item in value]
+    if isinstance(value, tuple):
+        raise ValueError(
+            f"tuples not allowed in canonical params (got {value!r}); "
+            f"use list for ordered sequences -- tuples and lists JSON-"
+            f"serialize identically and would hash-collide silently.",
+        )
+    if isinstance(value, bool):
+        return value
+    # Accept Python int/float AND numpy integer/floating types -- numpy
+    # scalars (np.int64, np.float64, ...) are NOT subclasses of Python
+    # int/float on most platforms, so plain `isinstance(x, int)` would
+    # reject np.int64(1). The point of canonicalization is to make
+    # int / float / np.int64 / np.float64 hash to the same value for
+    # the same logical number; explicit numpy-type acceptance.
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        f = float(value)
+        if not math.isfinite(f):
+            raise ValueError(
+                f"non-finite numeric not allowed in canonical params: {f}",
+            )
+        return f
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return None
+    raise ValueError(
+        f"unsupported type {type(value).__name__} in canonical params "
+        f"(value: {value!r}); allowed: dict/list/bool/int/float/str/None",
+    )
+
+
+def canonical_params_json(params: dict) -> str:
+    """Canonical-JSON serialization of `params` (the string hashed by
+    canonical_params_hash).
+
+    Canonical encoding rules (PINNED; deviation breaks TRIAL_LOG
+    uniqueness and DSR n_trials counting):
+
+        1. Top-level must be dict; nested values must be JSON-primitive
+           types or recursive dict/list. Tuples REJECTED.
+        2. All numeric values (int and float) coerced to float.
+           Coerces np.int64 / np.float64 / Python int / Python float
+           to the same string representation for the same logical value.
+        3. NaN / +Inf / -Inf REJECTED -- never legitimate parameters.
+        4. dict keys must be str; sorted ascending in serialization.
+        5. JSON separators forced to (',', ':') -- no whitespace.
+
+    Used by registry.log_trial to populate TRIAL_LOG.params_json
+    alongside canonical_params_hash so the human-readable form and
+    the hash refer to the same canonical encoding.
+    """
+    if not isinstance(params, dict):
+        raise TypeError(
+            f"params must be dict, got {type(params).__name__}",
+        )
+    canonical = _canonicalize(params)
+    return json.dumps(
+        canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
+
+
+def canonical_params_hash(params: dict) -> str:
+    """64-char lowercase SHA-256 hex of `canonical_params_json(params)`.
+
+    Used by `register_run` and `log_trial` to ensure identical logical
+    parameters always produce identical hashes across runs / machines.
+    See `canonical_params_json` for the encoding rules.
+    """
+    return hashlib.sha256(
+        canonical_params_json(params).encode("utf-8"),
+    ).hexdigest()
 
 
 # ── Deterministic RNG factory ────────────────────────────────────────────
