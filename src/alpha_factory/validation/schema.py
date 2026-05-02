@@ -75,6 +75,8 @@ Design decisions from the A.4.1 1-round adversarial critique
 """
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
+
 import polars as pl
 
 from alpha_factory.data.schema import DATA_ROOT, TZ_UTC
@@ -291,11 +293,29 @@ REGIME_METRICS_SCHEMA: dict[str, pl.DataType] = {
 
 REGIME_KIND_VOL = "vol"
 REGIME_KIND_ETF = "etf"
+REGIME_KIND_TREND = "trend"
 REGIME_KIND_MACRO = "macro"
 REGIME_KIND_FUNDING = "funding"
 VALID_REGIME_KINDS: tuple[str, ...] = (
-    REGIME_KIND_VOL, REGIME_KIND_ETF, REGIME_KIND_MACRO, REGIME_KIND_FUNDING,
+    REGIME_KIND_VOL, REGIME_KIND_ETF, REGIME_KIND_TREND,
+    REGIME_KIND_MACRO, REGIME_KIND_FUNDING,
 )
+
+# Regime label constants (consumed by regime.py + downstream gates).
+REGIME_LABEL_PRE_ETF = "pre_etf"
+REGIME_LABEL_POST_ETF = "post_etf"
+REGIME_LABEL_BULL = "bull"
+REGIME_LABEL_BEAR = "bear"
+REGIME_LABEL_VOL_LOW = "low"
+REGIME_LABEL_VOL_MID = "mid"
+REGIME_LABEL_VOL_HIGH = "high"
+
+# BTC spot ETF approval cutoff. Used by regime.py to label pre/post-ETF
+# epochs; CLAUDE.md / PROJECT.md "validation" gate "Pre-ETF AND post-ETF
+# each Sharpe >= 0" anchors here. Stored as the canonical date and
+# tz-aware datetime so callers can pick whichever fits their join key.
+ETF_CUTOFF_DATE = date(2024, 1, 11)
+ETF_CUTOFF_DATETIME = datetime(2024, 1, 11, tzinfo=UTC)
 
 
 # ── TRIAL_LOG (append-only ledger; DSR n_trials provenance) ──────────────
