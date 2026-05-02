@@ -69,6 +69,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -405,6 +406,106 @@ def load_funding_archive(root: Path = FUNDING_ROOT) -> pl.DataFrame:
     if not files:
         return pl.DataFrame()
     return pl.read_parquet([str(f) for f in files])
+
+
+# ── Archive state snapshot (consumed by L3 validation) ────────────────────
+
+
+@dataclass(frozen=True)
+class ArchiveState:
+    """Reproducibility snapshot of the L1 archive at a point in time.
+
+    Recorded on every backtest run (see validation/contracts.py and
+    BACKTEST_RESULT_SCHEMA) and every TRIAL_LOG entry so that future
+    audits can reproduce what data was visible at the time of validation.
+
+    `data_version` is a stable string id composed of:
+        - max kline open_time at minute resolution ("YYYY-MM-DDTHH:MM")
+        - "+" separator
+        - corrections-sidecar fingerprint (first 8 hex of SHA-256 over
+          sorted correction filenames; "nocorr" if none)
+
+    Two archive states with identical kline-max-time but different
+    corrections sidecars get distinct fingerprints, so re-validating a
+    run after a corrections-diff produces a fresh data_version (this is
+    exactly the trigger A.4.8 registry.check_corrections_diff watches
+    for).
+
+    Full archive SHA over all parquet bytes is deferred to A.5; the
+    timestamp + corrections fingerprint composite is sufficient for
+    reproducibility at our scale.
+    """
+
+    data_version: str
+    archive_max_kline_time: datetime | None
+    qc_audit_run_ts: datetime | None
+
+
+def _corrections_fingerprint(
+    klines_root: Path = KLINES_ROOT,
+    funding_root: Path = FUNDING_ROOT,
+) -> str:
+    """SHA-256 hex (first 8 chars) over sorted correction filenames.
+
+    Returns "nocorr" when no corrections sidecar files exist under
+    either kline_root/_corrections or funding_root/_corrections.
+    """
+    files: list[str] = []
+    for root in (klines_root / "_corrections", funding_root / "_corrections"):
+        if root.exists():
+            files.extend(sorted(p.name for p in root.glob("correction_*.parquet")))
+    if not files:
+        return "nocorr"
+    h = hashlib.sha256()
+    h.update("|".join(files).encode("utf-8"))
+    return h.hexdigest()[:8]
+
+
+def get_archive_state(
+    klines_root: Path = KLINES_ROOT,
+    funding_root: Path = FUNDING_ROOT,
+    qc_audit_dir: Path = QC_AUDIT_DIR,
+) -> ArchiveState:
+    """Snapshot the archive's reproducibility state at call time.
+
+    Returns:
+        ArchiveState(data_version, archive_max_kline_time, qc_audit_run_ts)
+
+    `archive_max_kline_time` is the max open_time across both spot and
+    perp_usdt klines in the archive, or None if archive is empty.
+
+    `qc_audit_run_ts` is the timestamp of the most recent qc_runs/
+    file (parsed from `qc_run_<unix_us>.parquet`), or None if no qc
+    audit has been run.
+
+    Re-exported into `alpha_factory.validation.contracts` so that the
+    L3 validation layer can call this without importing L1 internals
+    directly.
+    """
+    df = load_klines_archive(klines_root)
+    max_kline_time = df["open_time"].max() if df.height > 0 else None
+
+    qc_audit_ts: datetime | None = None
+    if qc_audit_dir.exists():
+        qc_files = sorted(qc_audit_dir.glob("qc_run_*.parquet"))
+        if qc_files:
+            try:
+                ts_us = int(qc_files[-1].stem.split("_")[-1])
+                qc_audit_ts = datetime.fromtimestamp(ts_us / 1e6, tz=UTC)
+            except (ValueError, IndexError):
+                qc_audit_ts = None
+
+    corr_fp = _corrections_fingerprint(klines_root, funding_root)
+    if max_kline_time is None:
+        data_version = f"empty+{corr_fp}"
+    else:
+        data_version = f"{max_kline_time.strftime('%Y-%m-%dT%H:%M')}+{corr_fp}"
+
+    return ArchiveState(
+        data_version=data_version,
+        archive_max_kline_time=max_kline_time,
+        qc_audit_run_ts=qc_audit_ts,
+    )
 
 
 # ── Orchestrator ──────────────────────────────────────────────────────────
