@@ -148,6 +148,31 @@ FUNDING_SCHEMA: dict[str, pl.DataType] = {
 }
 
 
+# ── Corrections sidecar schema ────────────────────────────────────────────
+#
+# Companion file emitted when re-ingest produces a numerically-different
+# value for an existing (symbol, market, time) row. CLAUDE.md red line:
+# "no silent overwrite of archive data — corrections must be logged."
+#
+# Layout: `{KLINES_ROOT|FUNDING_ROOT}/_corrections/correction_<unix_us>.parquet`.
+# Flat (not year-partitioned) — one file per ingest batch with at least one
+# correction. Schema is uniform across kline + funding so QC can read both
+# with a single load path. Numeric comparison uses rtol=1e-9, atol=0; below
+# that we treat ULP drift as no-op (parquet float round-trip).
+CORRECTIONS_SCHEMA: dict[str, pl.DataType] = {
+    "symbol": pl.Utf8,
+    # "spot" | "perp_usdt" | "perp_funding"
+    "market": pl.Utf8,
+    # open_time for kline, funding_time for funding rows
+    "time": pl.Datetime("us", time_zone=TZ_UTC),
+    "field": pl.Utf8,                                     # column whose value changed
+    "old_value": pl.Float64,
+    "new_value": pl.Float64,
+    "old_ingested_at": pl.Datetime("us", time_zone=TZ_UTC),
+    "new_ingested_at": pl.Datetime("us", time_zone=TZ_UTC),
+}
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────
 SPOT_KLINES_URL = "https://api.binance.com/api/v3/klines"
 FAPI_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"

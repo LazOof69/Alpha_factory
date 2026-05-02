@@ -17,6 +17,7 @@ from alpha_factory.data.binance_client import (
     RETRYABLE_STATUSES,
     BinanceAPIError,
     BinanceClient,
+    BinanceRateLimitError,
 )
 
 # ── Mock response + sequence ──────────────────────────────────────────────
@@ -186,6 +187,44 @@ def test_backoff_honors_retry_after_header(no_sleep, monkeypatch):
         c.get_json("https://example.test/x", {})
     # The single retry should have slept 7s (from Retry-After), not 1s (base_backoff).
     assert sleeps == [7.0]
+
+
+# ── Rate-limit typed exceptions (A.3.2) ───────────────────────────────────
+
+
+def test_rate_limit_error_is_subclass_of_api_error():
+    """Orchestrator code that catches BinanceAPIError must still see rate-limit failures."""
+    assert issubclass(BinanceRateLimitError, BinanceAPIError)
+
+
+def test_status_418_raises_rate_limit_immediately(no_sleep, monkeypatch):
+    """418 = IP banned. Non-retryable, must raise BinanceRateLimitError so orchestrator aborts."""
+    seq = GetCallSequence([MockResponse(418, text="banned")])
+    with BinanceClient() as c:
+        monkeypatch.setattr(c._client, "get", seq)
+        with pytest.raises(BinanceRateLimitError, match="status=418|IP banned"):
+            c.get_json("https://example.test/x", {})
+    assert len(seq.calls) == 1
+
+
+def test_status_429_exhaust_raises_rate_limit_not_plain_api_error(no_sleep, monkeypatch):
+    """429 retried then exhausted -> BinanceRateLimitError (orchestrator should abort)."""
+    seq = GetCallSequence([MockResponse(429) for _ in range(3)])
+    with BinanceClient(max_retries=3) as c:
+        monkeypatch.setattr(c._client, "get", seq)
+        with pytest.raises(BinanceRateLimitError, match="rate-limit"):
+            c.get_json("https://example.test/x", {})
+
+
+def test_status_503_exhaust_raises_plain_api_error_not_rate_limit(no_sleep, monkeypatch):
+    """503 != rate-limit. Exhaust -> BinanceAPIError (orchestrator continues to next symbol)."""
+    seq = GetCallSequence([MockResponse(503) for _ in range(3)])
+    with BinanceClient(max_retries=3) as c:
+        monkeypatch.setattr(c._client, "get", seq)
+        with pytest.raises(BinanceAPIError) as excinfo:
+            c.get_json("https://example.test/x", {})
+    # Must be the plain class, not the rate-limit subclass.
+    assert not isinstance(excinfo.value, BinanceRateLimitError)
 
 
 # ── Context manager closes underlying client ──────────────────────────────

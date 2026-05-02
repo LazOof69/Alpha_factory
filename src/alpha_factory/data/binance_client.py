@@ -36,6 +36,16 @@ class BinanceAPIError(RuntimeError):
     """Unrecoverable HTTP error from Binance — caller should abort."""
 
 
+class BinanceRateLimitError(BinanceAPIError):
+    """Retries exhausted on 418 (IP banned) or 429 (rate-limited).
+
+    Distinct subclass so the orchestrator can ABORT the entire run on a
+    rate-limit ban (continuing would extend the ban) while still
+    continuing past per-symbol failures of other kinds (geoblock,
+    delisted symbol, etc.).
+    """
+
+
 class BinanceClient:
     """Long-lived httpx.Client + retry loop. Use as a context manager.
 
@@ -73,8 +83,16 @@ class BinanceClient:
         self._client.close()
 
     def get_json(self, url: str, params: dict[str, Any]) -> Any:
-        """GET with retry on transient errors. Raises `BinanceAPIError` on hard fail."""
+        """GET with retry on transient errors. Raises `BinanceAPIError` on hard fail.
+
+        On retry exhaustion, the FINAL failure mode determines the exception
+        type: `BinanceRateLimitError` if the last retried status was 429
+        (Binance is also documented to return 418 on hard ban — but 418 is
+        non-retryable here, so it raises immediately). Plain
+        `BinanceAPIError` for transient-network exhaustion or other 5xx.
+        """
         last_err: Exception | None = None
+        last_status: int | None = None
         for attempt in range(self.max_retries):
             try:
                 r = self._client.get(url, params=params)
@@ -100,13 +118,20 @@ class BinanceClient:
 
             if status in NON_RETRYABLE_STATUSES:
                 # 418 = IP banned; 451 = geoblock; other 4xx = bad request.
-                # Surface body for debugging but do not retry.
+                # 418 is non-retryable here (further requests would extend
+                # the ban) — raise BinanceRateLimitError so the orchestrator
+                # can abort the whole run, not just continue past one symbol.
+                if status == 418:
+                    raise BinanceRateLimitError(
+                        f"IP banned status=418 url={url} body={r.text[:300]}"
+                    )
                 raise BinanceAPIError(
                     f"non-retryable status={status} url={url} "
                     f"params={params} body={r.text[:300]}"
                 )
 
             if status in RETRYABLE_STATUSES:
+                last_status = status
                 # Honor Retry-After if Binance sends one.
                 retry_after = r.headers.get("Retry-After")
                 wait = float(retry_after) if retry_after else self._backoff(attempt)
@@ -122,7 +147,11 @@ class BinanceClient:
                 f"unexpected status={status} url={url} body={r.text[:300]}"
             )
 
-        # Exhausted retries.
+        # Exhausted retries — discriminate the failure mode.
+        if last_status == 429:
+            raise BinanceRateLimitError(
+                f"rate-limit retries exhausted on {url}; last status=429"
+            )
         raise BinanceAPIError(
             f"max_retries exhausted on {url}; last error: {last_err}"
         )
