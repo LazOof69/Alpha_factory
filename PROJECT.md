@@ -361,7 +361,7 @@ If user later changes mind on monthly additions → update Open Questions #1 + t
 |---|---|---|
 | 1 | ~~Monthly capital addition amount~~ → **$0/mo (committed 2026-04-30)**, revisit if income/savings change | resolved |
 | 2 | Purged CV vs walk-forward — which for parameter validation | Phase A early |
-| 3 | Universe top-20 cutoff method (ADV / liquidity / listing date) | Phase A early |
+| 3 | ~~Universe top-20 cutoff method~~ → **Resolved Phase A.2** (commit `9f01cee`): top-20 by Binance 24h quote volume + 180d listing-age filter + spot-pair eligibility flag (`spot_pairs` list, not bool) + `total_candidates` audit. 4-endpoint atomicity guard within 5s window. Live snapshot `live_24hr_top_n_v2`; historical from archived klines = future method id. | resolved |
 | 4 | mlfinlab vs from-scratch DSR/PBO implementation | Phase A early |
 | 5 | Oracle ARM SSH access details + cron scheduling | Phase A early |
 | 6 | Deribit account opening for VRP | Phase D end |
