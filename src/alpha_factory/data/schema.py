@@ -173,6 +173,26 @@ CORRECTIONS_SCHEMA: dict[str, pl.DataType] = {
 }
 
 
+# ── QC run audit schema ───────────────────────────────────────────────────
+#
+# One row per QC result per run. Written atomically to
+# `data/qc_runs/qc_run_<run_ts_unix_us>.parquet` (immutable, never
+# overwritten — partial-write on crash leaves no canonical file, so
+# readers naturally skip incomplete runs).
+QC_RUN_SCHEMA: dict[str, pl.DataType] = {
+    "run_ts": pl.Datetime("us", time_zone=TZ_UTC),
+    "name": pl.Utf8,
+    "passed": pl.Boolean,
+    "severity": pl.Utf8,                                  # "ERROR" | "WARN" | "INFO"
+    # Common typed payload fields — flatten what most checks expose; rare
+    # check-specific keys go to `details_json` (Utf8 fallback).
+    "symbol": pl.Utf8,                                    # null for cross-cutting checks
+    "market": pl.Utf8,                                    # null when not symbol-scoped
+    "tier": pl.Utf8,                                      # "majors" | "small_caps" | null
+    "details_json": pl.Utf8,                              # full details dict serialized
+}
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────
 SPOT_KLINES_URL = "https://api.binance.com/api/v3/klines"
 FAPI_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
