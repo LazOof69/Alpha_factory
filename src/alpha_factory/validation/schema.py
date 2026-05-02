@@ -360,7 +360,11 @@ VALID_TRIAL_SPLITS: tuple[str, ...] = (
 # Mirrors the PROJECT.md "Validation" decisions table + the
 # strategy-validation skill canon. Consumed by A.4.4 (DSR) / A.4.5 (PBO)
 # / A.4.8 (registry.list_validated_alphas).
-GATE_DSR_LOWER_BOUND = 0.0           # 95% CI lower bound must exceed this
+# DSR is a Phi-probability in [0, 1]; "DSR > 0" in PROJECT.md "Validation"
+# means "deflated Sharpe is positive", which on the Phi-prob scale is
+# > 0.5 (Bailey & LdP 2014; mirrors dsr.py "pass iff CI_lo > 0.5"
+# convention). Stricter LdP gate would be 0.95.
+GATE_DSR_LOWER_BOUND = 0.5
 GATE_PBO_UPPER_BOUND = 0.5
 GATE_MAX_DD_BOUND = 0.30             # 30%
 GATE_MIN_HISTORY_YEARS = 5           # skill canon: "less than 5 years -> red flag"
