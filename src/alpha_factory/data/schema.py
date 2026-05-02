@@ -1,4 +1,4 @@
-"""Polars schemas + helpers for the L1 data layer (Phase A onwards).
+"""Polars schemas + helpers + path constants for the L1 data layer.
 
 Single source of truth — any module that reads or writes parquet imports
 schema dicts from here. Independent of `feasibility/scripts/schema.py`,
@@ -8,8 +8,17 @@ Why schemas live in a dict (not a pydantic / dataclass model):
     polars `cast(schema)` accepts a `dict[str, DataType]` directly; using a
     dict keeps the schema declaration tight and avoids a stringly-typed
     parallel definition.
+
+Storage layout (under repo-root `data/`, gitignored — see .gitignore `/data/`):
+    data/universe/{market}/snapshot_YYYY-MM.parquet
+    data/universe/{market}/rejected_YYYY-MM.parquet
+    data/klines/year=YYYY/data.parquet     (year-partitioned across all symbols)
+    data/funding/year=YYYY/data.parquet
 """
 from __future__ import annotations
+
+from datetime import UTC, datetime
+from pathlib import Path
 
 import polars as pl
 
@@ -100,6 +109,81 @@ REJECTION_REASON_LISTING_TOO_YOUNG = "listing_age_too_short"
 REJECTION_REASON_INVALID_PRICE = "last_price_invalid"
 
 
+# ── Klines schema ─────────────────────────────────────────────────────────
+#
+# 1h OHLCV across spot + USDT-M perp. Year-partitioned parquet at
+# `KLINES_ROOT/year=YYYY/data.parquet`. `market` distinguishes spot from
+# perp; `symbol` is canonical "BTC-USDT".
+#
+# Categorical-like columns (`market`, `source`) stored as Utf8 — pl.Categorical
+# does not survive parquet round-trip cleanly without a global string cache,
+# and storage savings are negligible at our row count (gotcha from FS).
+KLINES_SCHEMA: dict[str, pl.DataType] = {
+    "symbol": pl.Utf8,
+    "market": pl.Utf8,                                    # "spot" | "perp_usdt"
+    "open_time": pl.Datetime("us", time_zone=TZ_UTC),
+    "close_time": pl.Datetime("us", time_zone=TZ_UTC),
+    "open": pl.Float64,
+    "high": pl.Float64,
+    "low": pl.Float64,
+    "close": pl.Float64,
+    "volume": pl.Float64,
+    "quote_volume": pl.Float64,
+    "trades": pl.Int64,
+    "taker_buy_base": pl.Float64,
+    "taker_buy_quote": pl.Float64,
+    "ingested_at": pl.Datetime("us", time_zone=TZ_UTC),
+    "source": pl.Utf8,                                    # see SOURCE_*
+}
+
+
+# ── Funding schema (perp only) ────────────────────────────────────────────
+FUNDING_SCHEMA: dict[str, pl.DataType] = {
+    "symbol": pl.Utf8,
+    "funding_time": pl.Datetime("us", time_zone=TZ_UTC),  # truncated to 1s — see FS gotcha row
+    "funding_rate": pl.Float64,
+    "mark_price": pl.Float64,
+    "ingested_at": pl.Datetime("us", time_zone=TZ_UTC),
+    "source": pl.Utf8,
+}
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────
+SPOT_KLINES_URL = "https://api.binance.com/api/v3/klines"
+FAPI_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
+FAPI_FUNDING_URL = "https://fapi.binance.com/fapi/v1/fundingRate"
+
+
+# ── Source identifiers (recorded with each row for audit / API drift) ─────
+SOURCE_SPOT_KLINES = "binance_spot_v3"
+SOURCE_FAPI_KLINES = "binance_fapi_v1"
+SOURCE_FUNDING = "binance_fapi_funding_v1"
+
+
+# ── Time / pagination constants ───────────────────────────────────────────
+KLINE_INTERVAL = "1h"
+KLINE_INTERVAL_MS = 60 * 60 * 1000
+FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000
+
+# Binance per-call limits — use the smaller across spot/futures so logic is uniform.
+KLINE_LIMIT_PER_CALL = 1000
+FUNDING_LIMIT_PER_CALL = 1000
+
+# Polite delay between requests (well under rate limit; we are nowhere near it).
+SLEEP_BETWEEN_CALLS_S = 0.2
+
+
+# ── Storage layout ────────────────────────────────────────────────────────
+#
+# Path is relative to CWD by design — the caller (CLI / scheduled job)
+# controls the root, which keeps modules pure (no `Path(__file__)` magic
+# tying production code to a worktree path). Run from repo root.
+DATA_ROOT = Path("data")
+UNIVERSE_ROOT = DATA_ROOT / "universe"
+KLINES_ROOT = DATA_ROOT / "klines"
+FUNDING_ROOT = DATA_ROOT / "funding"
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 
@@ -117,3 +201,29 @@ def to_canonical_symbol(api_symbol: str, base: str) -> str:
 def conform(df: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.DataFrame:
     """Reorder + cast columns to exactly match `schema`. Run before `write_parquet`."""
     return df.select(list(schema.keys())).cast(schema)
+
+
+def epoch_ms_to_utc_us(col: pl.Expr) -> pl.Expr:
+    """Convert a ms-since-epoch Int column to UTC `Datetime("us", "UTC")`.
+
+    Binance API returns timestamps as Int64 ms-since-epoch. We standardize
+    on microsecond precision throughout the archive (smaller than ns,
+    lossless for our 1h / 8h grid).
+    """
+    return (
+        pl.from_epoch(col, time_unit="ms")
+        .dt.replace_time_zone(TZ_UTC)
+        .cast(pl.Datetime("us", time_zone=TZ_UTC))
+    )
+
+
+def parse_iso_or_date(s: str) -> datetime:
+    """Parse 'YYYY-MM-DD' or full ISO into a UTC-aware `datetime`.
+
+    Naive inputs are assumed UTC; tz-aware inputs are converted to UTC.
+    Python 3.11+ `datetime.fromisoformat` accepts bare dates.
+    """
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
