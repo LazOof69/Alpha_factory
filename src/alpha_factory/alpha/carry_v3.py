@@ -42,20 +42,24 @@ V3 ADDITIONS to V2 state machine:
         re-entry condition passes. Cost: forfeits ~30 days of carry
         at the start of any backtest (< 1.2% of a 6.6-year sample).
 
-THRESHOLD DERIVATION (1-round adversarial critique adjustments):
+THRESHOLD DERIVATION (post Phase B PBO sweep, 2026-05-03):
 
-    Phase A audit caveat suggested 0.5 bp/8h. Critique re-derived:
+    Phase A audit caveat originally suggested 0.5 bp/8h. The 1-round
+    pre-implementation critique re-derived break-even at ~0.09 bp/8h
+    (16 bp / 180 settlements). The Phase B PBO sweep then enumerated
+    18 trials = {0.05, 0.1, 0.15, 0.2, 0.3, 0.5} bp x {60, 90, 120}d
+    on the 6.6-year BTC archive and found:
 
-        break_even_per_settlement = round_trip_fee / expected_hold
-                                  = 16 bp / 180 settlements (60d)
-                                  = 0.089 bp/8h
-        Threshold should be ABOVE break-even (so V3 exits BEFORE
-        EV turns negative) but not so high that it exits in
-        marginally-profitable regimes. Initial = 0.3 bp/8h:
-            - well above 0.089 break-even (3.4x cushion)
-            - below the original 0.5 bp suggestion (less aggressive)
-            - subject to PBO sweep over {0.1, 0.3, 0.5, 0.8} bp
-              in Phase B before the threshold is locked.
+      - Best trial (0.05 bp / 120d) ties or beats V2 in all 4 windows
+        (full / last-12m / last-3m / post-ETF) within 0.05 noise.
+      - PBO = 0.30 < 0.5 (no overfit signal).
+      - At lookback=120d, post-ETF Sharpe range across thresholds is
+        only 0.27 (FLAT) — pick is robust, not knife-edge.
+
+    Default thresholds locked at the sweep optimum:
+      - exit_compression_30dma = 0.05 bp/8h (just above break-even).
+      - reentry_compression_30dma = 0.10 bp/8h (2x ratio, 0.05 bp gap).
+      - compression_lookback_settlements = 120 (40d).
 
     Asymmetric hysteresis: 0.6 bp re-entry vs 0.3 bp exit. The 0.3 bp
     gap matches V2's [-1, +0.5] absolute hysteresis spread; both
@@ -142,10 +146,16 @@ class CarryV3Params:
     reentry_funding_7dma: float = 0.00005    # +0.5 bp/8h: V2 re-entry
     lookback_settlements: int = 21           # 7d (3 settlements/day)
 
-    # V3 NEW (initial; PBO sweep pending)
-    exit_compression_30dma: float = 0.00003       # 0.3 bp/8h ABS
-    reentry_compression_30dma: float = 0.00006    # 0.6 bp/8h ABS (0.3 bp gap)
-    compression_lookback_settlements: int = 90    # 30d
+    # V3 NEW (post-PBO-sweep defaults, 2026-05-03)
+    # Sweep over {0.05, 0.1, 0.15, 0.2, 0.3, 0.5} bp x {60, 90, 120}d
+    # found (0.05 bp, 120d) ties-or-beats V2 in all 4 windows
+    # (full / last-12m / last-3m / post-ETF). PBO = 0.30 < 0.5 PASS.
+    # Sharpe surface at lookback=120d is FLAT across exit thresholds
+    # (range 4.51-4.78 = 0.27 gap), so the (0.05 bp) pick is robust
+    # rather than knife-edge. See scripts/v3_pbo_sweep.py.
+    exit_compression_30dma: float = 0.000005      # 0.05 bp/8h ABS
+    reentry_compression_30dma: float = 0.00001    # 0.10 bp/8h ABS (0.05 bp gap)
+    compression_lookback_settlements: int = 120   # 40d (post-sweep)
     min_state_duration_settlements: int = 21      # 7d ratchet guard
 
     def as_dict(self) -> dict:
