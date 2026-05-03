@@ -23,6 +23,7 @@ USAGE:
 """
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 from datetime import UTC, date, datetime
@@ -41,13 +42,29 @@ log = logging.getLogger(__name__)
 # ── Curated Phase B universe (per option B) ────────────────────────────
 
 
-# Order is by (current ADV rank within filter) descending; rank field
-# matches that order.
+# Narrow mode (default) — option B from 2026-05-03 decision.
+# 14 classical alts + BTC/ETH/SOL = 15 (MATIC delisted post-Polygon-rebrand
+# → 14 actually). All listing >= 2 yr.
 PHASEB_BASE_ASSETS = [
     "BTC", "ETH", "SOL",                        # already in archive
     "BNB", "XRP", "DOGE", "ADA", "AVAX",        # large-cap alts
     "LINK", "DOT", "MATIC", "UNI", "LTC",       # mid-cap alts
     "ATOM", "TRX",                              # additional classical
+]
+
+# Wide mode (--wide) — post adversarial-debate corrective universe (2026-05-03).
+# Adds 6 high-funding-dispersion tokens with listing >= 1 yr by May 2026.
+# These are the SOURCE OF THE FUNDING_XS ALPHA HYPOTHESIS that the narrow
+# universe was specifically excluded — the debate verdict said narrow was
+# the wrong call. Wider universe lets us re-test the thesis honestly.
+PHASEB_WIDE_EXTRA_ASSETS = [
+    "ORDI",       # ~2 yr (2024-Q1 listing); BRC-20 token
+    "1000LUNC",   # ~3 yr (2022-Q3 listing post-Luna collapse); meme-grade volatility
+    "1000PEPE",   # ~3 yr (2023-Q2 listing); meme token
+    "TAO",        # ~2 yr (2024 listing); AI/Bittensor
+    "HYPE",       # ~1 yr (2024-Q4 listing); Hyperliquid token (borderline)
+    "BIO",        # ~1.4 yr (2025-01 listing); already in archive (was excluded
+                  # from narrow); biotech meme
 ]
 
 OUT_PATH = Path("data/universe/perp_usdt/snapshot_2026-05.parquet")
@@ -100,7 +117,25 @@ def _spot_pairs_for(cli: BinanceClient, base: str) -> tuple[list[str], float | N
 
 
 def main() -> int:
-    log.info("Phase B curated universe builder")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--wide", action="store_true",
+        help="Wide universe: 14 narrow + 6 high-dispersion meme/AI tokens "
+             "(post adversarial-debate corrective universe; for funding_xs re-test)",
+    )
+    args = parser.parse_args()
+
+    if args.wide:
+        base_assets = PHASEB_BASE_ASSETS + PHASEB_WIDE_EXTRA_ASSETS
+        method = "phaseb_wide_post_debate_v1"
+        threshold_days = 365   # 1 year minimum
+        log.info("Phase B WIDE universe builder (20 perps; post-debate)")
+    else:
+        base_assets = PHASEB_BASE_ASSETS
+        method = "phaseb_curated_classical_alts_v1"
+        threshold_days = 730   # 2 years minimum
+        log.info("Phase B NARROW universe builder (14 perps; option B)")
+
     now = datetime.now(tz=UTC)
     period_start = date(2026, 5, 1)
     period_end = date(2026, 5, 31)
@@ -114,7 +149,7 @@ def main() -> int:
         ticker_by_symbol = {r["symbol"]: r for r in ticker_rows}
         ticker_fetched_at = datetime.now(tz=UTC)
 
-        for rank, base in enumerate(PHASEB_BASE_ASSETS, start=1):
+        for rank, base in enumerate(base_assets, start=1):
             api_symbol = f"{base}USDT"
             t = ticker_by_symbol.get(api_symbol)
             if t is None:
@@ -153,9 +188,9 @@ def main() -> int:
                 "listing_date": listing_dt,
                 "spot_pairs": spot_pairs,
                 "primary_spot_quote_volume": primary_qv,
-                "total_candidates": len(PHASEB_BASE_ASSETS),
-                "min_listing_days_threshold": 730,    # 2 years per option B
-                "method": "phaseb_curated_classical_alts_v1",
+                "total_candidates": len(base_assets),
+                "min_listing_days_threshold": threshold_days,
+                "method": method,
                 "ingested_at": now,
                 "source": "binance/fapi/v1/ticker/24hr",
                 "fapi_exchangeinfo_fetched_at": ticker_fetched_at,
