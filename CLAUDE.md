@@ -48,6 +48,16 @@ Ask the user once before running — the protocol consumes their attention. Skip
 
 The skill runs the 3-phase **Audit → Attack → Resolve** protocol (see `.claude/skills/adversarial-debate/SKILL.md`). It SUPERSEDES the lightweight pseudocode-gut-check pattern in `feedback_debate_before_recommendations.md` memory for high-stakes designs; the memory pattern remains the cheap default for routine first-pass critiques.
 
+### Language conventions
+
+Final replies to the user: **Traditional Chinese** (zh-TW). Default for the project.
+
+Sub-agent / Agent-tool prompts (adversarial-debate critique, code-reviewer audit, Plan / Explore / general-purpose research delegations, etc.): **English**. Sub-agent context is consumed by the model and English compresses materially better in token count for technical content. The agent's returned text can be in either language; when it comes back in English, summarize the gist back to the user in Chinese rather than echoing English verbatim. Inline code, file paths, command output, ASCII tables: pass through unchanged regardless of language.
+
+Code, comments, docstrings, commit messages: **English** (already standard).
+
+This is a token-cost optimization, not a quality lever — substantive analysis is unchanged.
+
 ## Red Lines (NEVER violate without explicit user override)
 
 ### Validation
