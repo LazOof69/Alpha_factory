@@ -1,0 +1,123 @@
+# Alpha Factory — Validated Alpha Registry
+#
+# Authoritative list of alphas that have passed L3 validation and are
+# eligible for L4 portfolio combination. Each entry corresponds to a
+# RUN_REGISTRY row with status='validated' AND a documented audit doc
+# under `docs/alphas/<id>.md`.
+#
+# `status` values:
+#   pass               — all gates passed without caveats
+#   pass-with-caveats  — gates passed but documented caveats apply;
+#                        Phase D paper-trade gating still required
+#   suspended          — temporarily withheld pending V-next fix
+#   failed             — gates rejected; do NOT enter L4
+#
+# Forward-Sharpe entries follow CLAUDE.md "× 0.3-0.5 haircut" rule and
+# are sourced from the most recent rolling 12-24m window, NOT the
+# full backtest aggregate (see audit docs for derivation).
+
+alphas:
+  - strategy_id: carry_v2
+    variant: default
+    status: pass-with-caveats
+    audit_doc: docs/alphas/carry_v2.md
+
+    # Most recent validated run on real archive
+    validation_run_id: dce76976-e9d7-4905-9b0d-48a27f6ef1bb
+    data_version: "2026-05-03T05:00+nocorr"
+    validated_at: "2026-05-03"
+
+    # Backtest headline (full 6.6-year sample on real BTC archive)
+    backtest:
+      n_obs: 57858
+      sharpe_full_sample: 3.3748
+      sharpe_excl_2021_2024: 2.4070   # outlier-corrected
+      sharpe_last_12m: 2.8774          # forward-anchor base
+      sortino: 4.86
+      calmar: 2.71
+      max_dd: -0.0189
+      max_dd_duration_days: 141
+      hit_rate: 0.5010
+      kurt_excess: 1576.76
+      skew: -3.06
+      n_transitions: 6
+      pct_active: 0.9624
+      capacity_estimate_usd: 78331370
+
+    # Forward-Sharpe anchor (anchored to recent 12m × haircut)
+    forward_sharpe:
+      anchor_window: "last_12m"
+      anchor_sharpe: 2.8774
+      haircut_low: 0.3
+      haircut_high: 0.5
+      forward_low: 0.86
+      forward_high: 1.44
+      project_md_target: 0.75       # carry-alone target
+      meets_target: true
+
+    # Validation gates
+    gates:
+      dsr_full_sample: 1.0000
+      dsr_full_sample_n_trials_100: 0.999991
+      dsr_recent_12m_n_trials_100: 0.625017
+      dsr_passes: true
+      pbo: null                      # N/A for single-params; Phase B sweep will compute
+      pbo_passes: null
+      max_dd_passes: true
+      regime_pre_etf_sharpe: 3.49
+      regime_post_etf_sharpe: 4.63
+      regime_bull_sharpe: 4.27
+      regime_bear_sharpe: 2.22
+      regime_gates_pass: true
+      corrections_diff_status: clean
+
+    # Caveats from 3-phase adversarial audit (A.5.3)
+    caveats:
+      - id: recent_3m_negative
+        severity: blocking_for_live
+        message: |
+          Last 3-month Sharpe is -0.95 (ann_ret -0.48%). Strategy may be
+          structurally compressed in current regime. Track rolling 3m
+          monthly; if Q3-2026 continues negative, revoke the verdict.
+
+      - id: v3_funding_compression_detector_missing
+        severity: required_for_phase_d
+        message: |
+          V2 detects only absolute negative-funding regimes (caught COVID,
+          FTX correctly). Does not detect funding compression toward zero,
+          which is the current 2025-2026 threat. V3 should add e.g.
+          30d-MA < 0.5bp/8h -> exit. Phase B follow-up.
+
+      - id: sample_bias_2021_2024
+        severity: documentation
+        message: |
+          2021 (Sharpe 5.81) and 2024 (Sharpe 6.51) are leverage-froth
+          outlier years. Excluding both, full-sample Sharpe drops to 2.41.
+          Cross-strategy comparisons should quote the 2.41 figure.
+
+      - id: post_etf_anomaly
+        severity: documentation
+        message: |
+          post_etf Sharpe (4.63) > pre_etf (3.49) is misleading -- post_etf
+          mean is HALF, std is one-third. Sharpe rises only because std
+          collapsed faster. Dollar return economically halved post-ETF.
+
+      - id: dsr_recent_window_required
+        severity: pipeline
+        message: |
+          Full-sample DSR is uninformatively close to 1.0 even at
+          n_trials=1000. Phase B sweep should compute DSR on rolling
+          18-24m windows, not full archive.
+
+    # Phase D gating (must satisfy ALL before live capital)
+    phase_d_gates:
+      - "rolling_3m_sharpe > 0 for 2 consecutive months"
+      - "V3 funding-compression detector landed AND backtested"
+      - "3-month paper trading on Binance API with < 30% tracking error"
+      - "live capital cap $1k initially"
+
+    # Position sizing hint for L4 HRP (per-strategy weight cap)
+    portfolio_hint:
+      max_weight: 0.50               # CLAUDE.md red line
+      forward_vol_estimate: 0.06     # ann vol approx; refine in Phase C
+      orthogonality_to_btc_directional: high   # delta-neutral

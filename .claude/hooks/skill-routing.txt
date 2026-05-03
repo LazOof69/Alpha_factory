@@ -7,7 +7,7 @@ Available skills, by layer:
 - L4 Portfolio:   anthropic-skills:portfolio-construction
 - L5 Execution:   anthropic-skills:live-trading-execution
 
-Cross-cutting: code-reviewer (script review) | simplify (post-edit cleanup) | anthropic-skills:xlsx (results output) | anthropic-skills:quant-analyst (general quant) | anthropic-skills:docx (report)
+Cross-cutting: code-reviewer (script review) | simplify (post-edit cleanup) | anthropic-skills:xlsx (results output) | anthropic-skills:quant-analyst (general quant) | anthropic-skills:docx (report) | adversarial-debate (red-team / 辯論 / 找漏洞)
 
 Trigger heuristic — ALWAYS invoke when:
 - Writing/modifying data fetch or schema → market-data-pipeline
@@ -17,3 +17,5 @@ Trigger heuristic — ALWAYS invoke when:
 - Paper trading / live order / TCA → live-trading-execution
 - After writing code → code-reviewer (or simplify for refactor pass)
 - Producing results table → xlsx
+- User asks 辯論 / 反駁 / 紅隊 / 找漏洞 / poke holes / be brutal / steelman the opposite → adversarial-debate
+- OFFER (don't run unilaterally) adversarial-debate after a substantive analytical conclusion lands AND stakes are real (strategy verdict, irreversible design, capital-deployment recommendation, forecast, ambiguous-data diagnosis)
