@@ -109,10 +109,21 @@ alphas:
           n_trials=1000. Phase B sweep should compute DSR on rolling
           18-24m windows, not full archive.
 
+      - id: v3_implemented_but_not_yet_superseding
+        severity: documentation
+        message: |
+          V3 funding-compression detector is implemented and passes L3
+          (see carry_v3 entry below), but at default thresholds V3
+          underperforms V2 in steady-positive regimes (last-12m
+          Sharpe 1.82 vs 2.85). V3 supersedes V2 only after Phase B
+          PBO sweep tunes the compression threshold. Until then, V2
+          is the carry alpha for L4 portfolio construction.
+
     # Phase D gating (must satisfy ALL before live capital)
     phase_d_gates:
       - "rolling_3m_sharpe > 0 for 2 consecutive months"
-      - "V3 funding-compression detector landed AND backtested"
+      - "V3 funding-compression detector landed AND backtested"  # DONE 2026-05-03
+      - "V3 PBO sweep selects threshold AND V3 dominates V2 on post-ETF"  # PENDING
       - "3-month paper trading on Binance API with < 30% tracking error"
       - "live capital cap $1k initially"
 
@@ -121,3 +132,116 @@ alphas:
       max_weight: 0.50               # CLAUDE.md red line
       forward_vol_estimate: 0.06     # ann vol approx; refine in Phase C
       orthogonality_to_btc_directional: high   # delta-neutral
+
+  - strategy_id: carry_v3
+    variant: v3-compare-v3-default-thresholds
+    status: pass-with-caveats
+    audit_doc: docs/alphas/carry_v3.md
+
+    # Phase B initial run on real archive (default thresholds; sweep pending)
+    validation_run_id: 929ed503-5a3e-4065-bbe9-933c407c6950
+    data_version: "2026-05-03T05:00+nocorr"
+    validated_at: "2026-05-03"
+
+    # Relationship to V2 (DOES NOT supersede V2 at current thresholds)
+    supersedes: null
+    relation_to_v2: |
+      V3 = V2 + funding-compression detector + ratchet guard. V3 closes
+      the V2 caveat 'v3_funding_compression_detector_missing'. At default
+      V3 thresholds (0.3 / 0.6 bp), V3 underperforms V2 in
+      steady-positive regimes (last-12m Sharpe 1.82 vs 2.85). V3 will
+      supersede V2 in L4 ONLY after Phase B PBO sweep tunes the
+      threshold and confirms V3 dominates V2 on post-ETF window.
+
+    # Backtest headline (full 6.6-year sample, default thresholds)
+    backtest:
+      n_obs: 57858
+      sharpe_full_sample: 3.1525
+      sharpe_last_12m: 1.8174
+      sharpe_last_3m: 0.0000           # V3 fixed V2's recent_3m_negative
+      sharpe_post_etf: 4.3956
+      max_dd: -0.0174
+      active_fraction: 0.6437          # vs V2's 0.9624 (-32pp)
+      n_transitions: 22                # vs V2's 6
+      final_equity: 1340.89            # vs V2's 1391.33
+
+    # Forward-Sharpe anchor (anchored to recent 12m × haircut)
+    forward_sharpe:
+      anchor_window: "last_12m"
+      anchor_sharpe: 1.8174
+      haircut_low: 0.3
+      haircut_high: 0.5
+      forward_low: 0.55
+      forward_high: 0.91
+      project_md_target: 0.75          # carry-alone target
+      meets_target: "marginal"          # at high end only; below at low end
+
+    # Validation gates
+    gates:
+      dsr_full_sample: 1.0000
+      dsr_passes: true
+      pbo: null                        # N/A for single-params; Phase B sweep
+      pbo_passes: null
+      max_dd_passes: true
+      regime_pre_etf_sharpe: null      # not yet extracted from registry
+      regime_post_etf_sharpe: 4.3956
+      regime_bull_sharpe: null
+      regime_bear_sharpe: null
+      regime_gates_pass: true          # verdict=pass implies all 4 cleared
+      corrections_diff_status: clean
+
+    # Caveats specific to V3 (full text in docs/alphas/carry_v3.md)
+    caveats:
+      - id: thresholds_untuned
+        severity: required_for_supersede_v2
+        message: |
+          Default thresholds (0.3 bp/8h exit, 0.6 bp/8h re-entry) are
+          interim values landing between the 1-round-critique-derived
+          break-even (~0.09 bp at 60-day expected hold) and the original
+          Phase A audit suggestion (0.5 bp). V3 underperforms V2 at
+          these thresholds in steady-positive regimes. Phase B PBO
+          sweep over {0.05, 0.1, 0.15, 0.2, 0.3, 0.5} bp must pick the
+          robust value before V3 takes V2's L4 carry slot.
+
+      - id: v3_does_not_supersede_v2_yet
+        severity: structural
+        message: |
+          V3's design intent was to dominate V2 in post-ETF compression
+          regimes. Empirically V3 post-ETF Sharpe is 4.40 vs V2's 4.63
+          at current thresholds. V3 is a CANDIDATE in this registry,
+          NOT a REPLACEMENT for V2. L4 HRP must use V2 as the carry
+          alpha until V3 supersede gate passes.
+
+      - id: v3_warmup_handicap
+        severity: documentation
+        message: |
+          V3 default initial state is `exited` (vs V2's `active`),
+          costing 30-60 days of carry at any cold-start backtest.
+          For 6.6yr sample this is < 1.2% impact; for 1yr cold start
+          the handicap can dominate. Mitigation: persist last state
+          to registry across restarts (Phase B work item).
+
+      - id: dsr_recent_window_required
+        severity: pipeline
+        message: |
+          Inherited from V2: full-sample DSR saturates at 1.0 even with
+          n_trials=1000. Rolling 18-24m DSR is more informative.
+
+    # Phase D gating: V3-specific (in addition to common L4 gates)
+    phase_d_gates:
+      - "PBO sweep over {0.05, 0.1, 0.15, 0.2, 0.3, 0.5} bp picks threshold"
+      - "V3 dominates V2 on post-ETF Sharpe at chosen threshold"
+      - "Sharpe surface flat to +/-25% threshold movement"
+      - "Last-3m Sharpe >= 0 for >= 2 consecutive quarters at chosen threshold"
+      - "3-month paper trading on Binance API with < 30% tracking error"
+      - "live capital cap $1k initially"
+
+    # Position sizing hint for L4 HRP (deferred until V3 supersedes V2)
+    portfolio_hint:
+      max_weight: 0.50                  # CLAUDE.md red line, same as V2
+      forward_vol_estimate: 0.05        # lower active_frac => lower realized vol
+      orthogonality_to_btc_directional: high   # delta-neutral, same as V2
+      v3_v2_correlation_estimate: ">= 0.9"   # NOT measured; assertion based
+                                              # on shared legs + V2 exit path
+                                              # inheritance. Phase B portfolio
+                                              # step to measure.
