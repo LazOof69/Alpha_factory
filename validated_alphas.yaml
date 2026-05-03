@@ -249,6 +249,9 @@ alphas:
       - "3-month paper trading on Binance API with < 30% tracking error"
       - "live capital cap $1k initially"
 
+    family: carry_v3                     # head-of-family (BTC); see carry_v3-eth + carry_v3-sol below
+    family_role: primary_high_confidence
+
     # Position sizing hint for L4 HRP (V3 is now portfolio_eligible)
     portfolio_hint:
       max_weight: 0.50                  # CLAUDE.md red line, same as V2
@@ -259,3 +262,185 @@ alphas:
                                               # inheritance. Phase B portfolio
                                               # step to measure.
       portfolio_eligible: true          # V3 takes carry slot post-sweep
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Multi-symbol carry_v3 family (Phase B option (c) — 2026-05-04)
+  #
+  # Per 3rd-round adversarial-debate verdict, single-alpha portfolio
+  # would violate CLAUDE.md "single alpha > 50% portfolio weight" red
+  # line. Option (c) resolves this by running carry_v3 mechanism as a
+  # FAMILY of symbol-specific instances. Each instance shares logic
+  # (post-sweep defaults: exit=0.05bp, lookback=120d) but exposes
+  # different funding-rate dynamics + vol regime + correlation-to-BTC.
+  #
+  # KNOWN ISSUE: TRIAL_LOG idempotency check fires on (strategy_id,
+  # params_hash, data_version, split) for multi-symbol same-params
+  # runs (symbol not in trial_log key). ETH + SOL entries below have
+  # NO RUN_REGISTRY run_id; metrics are EXPLORATORY (from
+  # scripts/run_carry_v3_multi_symbol.py direct backtest, not via
+  # runner.run_carry_validation). Phase B follow-up: include symbol
+  # in trial_log key, then re-run all 3 to register canonically.
+  # ─────────────────────────────────────────────────────────────────────
+
+  - strategy_id: carry_v3-eth
+    variant: multisymbol-ETH-USDT
+    status: pass-with-caveats
+    audit_doc: docs/alphas/carry_v3.md      # shared with carry_v3 (BTC)
+    family: carry_v3
+    family_role: secondary_high_confidence  # second instance after BTC
+
+    # EXPLORATORY (no RUN_REGISTRY entry; trial_log fix pending)
+    validation_run_id: null
+    validation_status: exploratory_pre_trial_log_fix
+    data_version: "2026-05-04T00:00+nocorr"
+    validated_at: "2026-05-04"
+    harness: scripts/run_carry_v3_multi_symbol.py
+
+    portfolio_eligible: true
+
+    # Backtest headline (post-sweep defaults; full archive)
+    backtest:
+      n_obs: 56359                           # ETH-USDT perp bars 2019-11+
+      sharpe_full_sample: 3.557
+      sharpe_last_12m: 2.506
+      sharpe_post_etf: 3.628
+      max_dd: -0.0126
+      active_fraction: 0.89
+      n_transitions: 10
+      final_equity: 1443.76
+
+    forward_sharpe:
+      anchor_window: "last_12m"
+      anchor_sharpe: 2.506
+      haircut_low: 0.3
+      haircut_high: 0.5
+      forward_low: 0.75
+      forward_high: 1.25
+      project_md_target: 0.75              # carry-alone target
+      meets_target: true
+
+    caveats:
+      - id: exploratory_pre_trial_log_fix
+        severity: pipeline
+        message: |
+          ETH backtest was via run_carry_v3_backtest direct call, NOT
+          runner.run_carry_validation. Reason: TRIAL_LOG idempotency
+          check fires on (strategy_id, params_hash, data_version, split)
+          for multi-symbol same-params runs. Fix is to include symbol
+          in trial_log key (Phase B follow-up). Until then, ETH metrics
+          here are not registry-tracked; promote to canonical entry
+          after fix.
+      - id: pbo_sweep_btc_only
+        severity: documentation
+        message: |
+          The carry_v3 thresholds (exit=0.05 bp/8h, lookback=120d) were
+          PBO-swept on BTC archive only (Phase B Step 1). Threshold
+          robustness across ETH-funding regime not verified. ETH funding
+          dynamics differ from BTC (slightly higher base rate, more
+          regime variability). Phase B follow-up: extend PBO sweep
+          harness to multi-symbol.
+
+    portfolio_hint:
+      max_weight: 0.50                     # CLAUDE.md red line
+      forward_vol_estimate: 0.06
+      orthogonality_to_btc_directional: high
+      eth_btc_carry_correlation_estimate: ">= 0.7"  # asserted, not measured
+                                                     # similar mechanism + similar
+                                                     # post-ETF compression regime
+
+  - strategy_id: carry_v3-sol
+    variant: multisymbol-SOL-USDT
+    status: pass-with-caveats
+    audit_doc: docs/alphas/carry_v3.md
+    family: carry_v3
+    family_role: tertiary_diversifier        # marginal Sharpe; included for
+                                              # vol/regime diversification only
+
+    validation_run_id: null
+    validation_status: exploratory_pre_trial_log_fix
+    data_version: "2026-05-04T00:00+nocorr"
+    validated_at: "2026-05-04"
+    harness: scripts/run_carry_v3_multi_symbol.py
+
+    portfolio_eligible: true                 # included; honest framing in caveats
+
+    backtest:
+      n_obs: 49367                            # SOL-USDT perp bars 2020-09+
+      sharpe_full_sample: 0.891
+      sharpe_last_12m: 0.343
+      sharpe_post_etf: 2.662
+      max_dd: -0.0779                         # 4-6x BTC/ETH max_dd
+      active_fraction: 0.69
+      n_transitions: 38                       # ~3x churn vs BTC/ETH
+      final_equity: 1244.32
+
+    forward_sharpe:
+      anchor_window: "last_12m"
+      anchor_sharpe: 0.343
+      haircut_low: 0.3
+      haircut_high: 0.5
+      forward_low: 0.10
+      forward_high: 0.17
+      project_md_target: 0.75
+      meets_target: false                    # below target at both haircut ends
+
+    caveats:
+      - id: marginal_pass_only
+        severity: blocking_for_paper_trade
+        message: |
+          SOL last-12m Sharpe = 0.343 hairs above 0; full-sample 0.891
+          fails the carry-alone PROJECT.md 0.75 target. SOL is included
+          in the family for VOL/REGIME DIVERSIFICATION (corr to BTC ~0.75
+          asserted), NOT for direct return contribution. Forward-Sharpe
+          contribution expected ~0.10 after × 0.3 haircut. Treat SOL
+          allocation as "diversifying but break-even", not as alpha source.
+      - id: high_turnover
+        severity: documentation
+        message: |
+          SOL has 38 regime transitions vs 14 (BTC) and 10 (ETH). The
+          v3 funding-compression detector triggers more often on SOL
+          due to its more variable funding regime. Higher transition
+          cost is reflected in active_fraction = 0.69 (vs 0.89-0.90 for
+          BTC/ETH).
+      - id: max_dd_4x_btc
+        severity: documentation
+        message: |
+          SOL max_dd = -7.79%, vs BTC -1.89% and ETH -1.26%. Still well
+          within CLAUDE.md 30% red line, but worth flagging that SOL
+          adds dd risk to the portfolio. HRP weighting should account
+          for this (low weight expected ~15-20%).
+      - id: exploratory_pre_trial_log_fix
+        severity: pipeline
+        message: |
+          Same as carry_v3-eth: not yet in RUN_REGISTRY pending
+          trial_log key fix.
+
+    portfolio_hint:
+      max_weight: 0.30                       # tighter cap reflecting marginality
+      forward_vol_estimate: 0.10             # higher than BTC/ETH
+      orthogonality_to_btc_directional: high
+      sol_btc_carry_correlation_estimate: "0.50-0.75"  # estimated; lower
+                                                       # corr than ETH due to
+                                                       # different vol regime
+
+# ─────────────────────────────────────────────────────────────────────────
+# PARKED ALPHAS (Phase B exploration; not portfolio-eligible)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# funding_xs and momentum_xs (cross-sectional) were investigated in
+# Phase B Step 2 (2026-05-03/04). 3 rounds of adversarial-debate +
+# 2-universe thesis test concluded:
+#
+#   funding_xs: residual α ~0.12 Sharpe gross consistent across narrow
+#   (14 perps) and wide (20 perps) universes. After × 0.3 haircut
+#   forward ~0.04 Sharpe. After fees: net negative. PARKED.
+#
+#   momentum_xs: raw lift on wide universe (-0.108 → +0.27) entirely
+#   concentrated in 6 added meme/AI tokens (LUNC, PEPE, ORDI, TAO,
+#   HYPE, BIO). Per-token contribution ~0.063 Sharpe — fragile to
+#   single-token decay. Multi-test Bonferroni rejects t=2.89 significance.
+#   PARKED.
+#
+# Both deferred until either (a) capital scales beyond retail or (b)
+# better-conceived signals emerge. No yaml entry — see scripts/
+# funding_xs_thesis_test.py + git log for diagnostic record.
