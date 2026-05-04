@@ -104,6 +104,11 @@ from alpha_factory.validation.schema import (
 __all__ = [
     "CarryArtifacts",
     "CarryParams",
+    "build_contrib",
+    "build_equity_curve",
+    "build_legs",
+    "count_transitions",
+    "join_klines_funding",
     "run_carry_backtest",
 ]
 
@@ -206,7 +211,7 @@ def run_carry_backtest(
     Empty input (no overlapping spot+perp bars) returns empty artifacts
     with conforming schemas; n_transitions = 0.
     """
-    bars = _join_klines_funding(symbol, klines_df, funding_df)
+    bars = join_klines_funding(symbol, klines_df, funding_df)
 
     if bars.height == 0:
         return CarryArtifacts(
@@ -218,17 +223,23 @@ def run_carry_backtest(
         )
 
     bars = _compute_regime_states(bars, params)
-    n_transitions = _count_transitions(bars)
+    n_transitions = count_transitions(bars)
 
-    # _build_legs populates funding_paid up-front from bars.funding_rate;
+    # build_legs populates funding_paid up-front from bars.funding_rate;
     # apply_costs only touches fees + slippage, so funding_paid survives.
-    legs_pre = _build_legs(run_id, symbol, bars, params)
+    legs_pre = build_legs(
+        run_id, symbol, bars, capital_per_leg=params.capital_per_leg,
+    )
     legs = apply_costs(
         legs_pre, fee_tier=fee_tier, slippage_model=slippage_model,
     )
 
-    contrib = _build_contrib(run_id, symbol, legs, params)
-    equity_curve = _build_equity_curve(run_id, legs, params)
+    contrib = build_contrib(
+        run_id, symbol, legs, capital_per_leg=params.capital_per_leg,
+    )
+    equity_curve = build_equity_curve(
+        run_id, legs, capital_per_leg=params.capital_per_leg,
+    )
 
     return CarryArtifacts(
         legs=legs.select(list(BACKTEST_LEG_SCHEMA.keys())).cast(BACKTEST_LEG_SCHEMA),
@@ -242,14 +253,14 @@ def run_carry_backtest(
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def _join_klines_funding(
+def join_klines_funding(
     symbol: str,
     klines_df: pl.DataFrame,
     funding_df: pl.DataFrame,
 ) -> pl.DataFrame:
     """Inner-join spot+perp klines on open_time; left-join funding.
 
-    Returns a DataFrame with columns:
+    Public helper shared with V3+ carry variants. Returns a DataFrame with:
         open_time, spot_close, perp_close, funding_rate (nullable),
         spot_ret, perp_ret
     Rows where one of (spot, perp) is missing are dropped (inner-join);
@@ -337,21 +348,31 @@ def _compute_regime_states(
     return bars.with_columns(regime_state=pl.Series(states, dtype=pl.Int8))
 
 
-def _count_transitions(bars: pl.DataFrame) -> int:
-    """Count regime flips in `regime_state` (active <-> exited)."""
+def count_transitions(bars: pl.DataFrame) -> int:
+    """Count regime flips in `regime_state` (active <-> exited).
+
+    Public helper shared with V3+; works on any DataFrame whose
+    `regime_state` column is Int8/Int64 with monotonic time order.
+    """
     if bars.height < 2:
         return 0
     states = bars["regime_state"].to_numpy()
     return int(np.sum(states[1:] != states[:-1]))
 
 
-def _build_legs(
+def build_legs(
     run_id: str,
     symbol: str,
     bars: pl.DataFrame,
-    params: CarryParams,
+    *,
+    capital_per_leg: float,
 ) -> pl.DataFrame:
     """Build BACKTEST_LEG-shaped DataFrame: 2 legs per bar (spot+perp).
+
+    Public helper shared with V3+ carry variants. `bars` must contain
+    `regime_state` (Int8 0|1), `funding_rate`, `spot_ret`, `perp_ret`,
+    `open_time`. `capital_per_leg` is taken as a scalar to keep this
+    helper independent of any specific Params dataclass.
 
     Columns populated here:
         run_id, time, leg_id, symbol, market, side, weight, notional,
@@ -377,7 +398,7 @@ def _build_legs(
     """
     n = bars.height
     state = bars["regime_state"].cast(pl.Float64).to_numpy()
-    cap = params.capital_per_leg
+    cap = capital_per_leg
     times = bars["open_time"].to_list()
     rates = bars["funding_rate"].to_numpy()
 
@@ -429,13 +450,17 @@ def _build_legs(
     return pl.concat([spot_legs, perp_legs])
 
 
-def _build_contrib(
+def build_contrib(
     run_id: str,
     symbol: str,
     legs: pl.DataFrame,
-    params: CarryParams,
+    *,
+    capital_per_leg: float,
 ) -> pl.DataFrame:
     """Build PER_SYMBOL_CONTRIB: 1 row per bar with aggregate symbol P&L.
+
+    Public helper shared with V3+. `capital_per_leg` is a scalar; NAV =
+    2 * capital_per_leg by carry convention.
 
     contrib_pnl USDT per bar = sum over legs of:
         weight * leg_ret * NAV  -- gross PnL contribution
@@ -443,7 +468,7 @@ def _build_contrib(
     position_notional = |sum signed_notional| (delta-neutral carry: 0)
     weight_net = sum(weight) (delta-neutral carry: 0)
     """
-    nav = 2.0 * params.capital_per_leg
+    nav = 2.0 * capital_per_leg
     per_bar = (
         legs.group_by("time")
         .agg(
@@ -470,10 +495,13 @@ def _build_contrib(
     ])
 
 
-def _build_equity_curve(
-    run_id: str, legs: pl.DataFrame, params: CarryParams,
+def build_equity_curve(
+    run_id: str, legs: pl.DataFrame, *, capital_per_leg: float,
 ) -> pl.DataFrame:
     """Build EQUITY_CURVE: per-bar gross/net returns + compounded equity.
+
+    Public helper shared with V3+. `capital_per_leg` is a scalar; NAV =
+    2 * capital_per_leg by carry convention.
 
     period_ret_gross = sum(weight * leg_ret) on per-NAV basis
                        (no friction).
@@ -488,7 +516,7 @@ def _build_equity_curve(
     is NOT propagated to equity (acceptable simplification for long
     backtests; documented at module level).
     """
-    nav = 2.0 * params.capital_per_leg
+    nav = 2.0 * capital_per_leg
     per_bar = (
         legs.group_by("time")
         .agg(

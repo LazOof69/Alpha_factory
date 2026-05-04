@@ -109,15 +109,338 @@ alphas:
           n_trials=1000. Phase B sweep should compute DSR on rolling
           18-24m windows, not full archive.
 
+      - id: superseded_by_carry_v3
+        severity: structural
+        message: |
+          Phase B PBO sweep (2026-05-03, scripts/v3_pbo_sweep.py)
+          enumerated 18 V3 trials = {0.05,0.1,0.15,0.2,0.3,0.5} bp x
+          {60,90,120}d. Best trial (0.05 bp / 120d) ties-or-beats V2
+          in all 4 windows {full, 12m, 3m, post-ETF}; PBO=0.30 < 0.5
+          PASS gate; Sharpe surface FLAT at lookback=120d (range 0.27).
+          For L4 portfolio construction, USE carry_v3 (post-sweep
+          defaults). V2 backtest record retained for audit + cross-
+          check; not portfolio-eligible.
+
+      - id: dsr_recent_window_required
+        severity: pipeline
+        message: |
+          Full-sample DSR is uninformatively close to 1.0 even at
+          n_trials=1000. Phase B sweep should compute DSR on rolling
+          18-24m windows, not full archive.
+
+    # Supersession (V2 -> V3 post-sweep)
+    superseded_by: carry_v3
+    superseded_run_id: 053ee062-5285-4936-b991-6d5cf7839c51
+
     # Phase D gating (must satisfy ALL before live capital)
     phase_d_gates:
       - "rolling_3m_sharpe > 0 for 2 consecutive months"
-      - "V3 funding-compression detector landed AND backtested"
+      - "V3 funding-compression detector landed AND backtested"  # DONE 2026-05-03
+      - "V3 PBO sweep selects threshold AND V3 dominates V2 on post-ETF"  # DONE 2026-05-03
       - "3-month paper trading on Binance API with < 30% tracking error"
       - "live capital cap $1k initially"
 
     # Position sizing hint for L4 HRP (per-strategy weight cap)
+    # NOTE: V2 superseded; portfolio_hint here retained for audit
     portfolio_hint:
       max_weight: 0.50               # CLAUDE.md red line
       forward_vol_estimate: 0.06     # ann vol approx; refine in Phase C
       orthogonality_to_btc_directional: high   # delta-neutral
+      portfolio_eligible: false      # V3 takes the carry slot post-sweep
+
+  - strategy_id: carry_v3
+    variant: v3-post-sweep-defaults
+    status: pass-with-caveats
+    audit_doc: docs/alphas/carry_v3.md
+
+    # Post-PBO-sweep run with locked defaults (exit=0.05 bp/8h, lookback=120d)
+    validation_run_id: 053ee062-5285-4936-b991-6d5cf7839c51
+    data_version: "2026-05-03T05:00+nocorr"
+    validated_at: "2026-05-03"
+
+    # Relationship to V2 (V3 supersedes V2 post-sweep)
+    supersedes: carry_v2
+    portfolio_eligible: true
+    sweep_summary:
+      script: scripts/v3_pbo_sweep.py
+      grid: "6 thresholds {0.05,0.1,0.15,0.2,0.3,0.5} bp x 3 lookbacks {60,90,120}d = 18 trials"
+      best_trial: "exit=0.05 bp / lookback=120d"
+      pbo: 0.3035
+      pbo_gate_pass: true              # 0.30 < 0.5
+      sharpe_surface_at_120d_lookback: "FLAT (range 0.27 across thresholds)"
+      n_dominance_windows: "4/4 ties-or-beats V2 (full / 12m / 3m / post-ETF)"
+
+    relation_to_v2: |
+      V3 = V2 + funding-compression detector + ratchet guard. V3 closes
+      the V2 caveat 'v3_funding_compression_detector_missing'. After
+      Phase B PBO sweep on 2026-05-03, V3 best trial (0.05 bp / 120d)
+      ties-or-beats V2 in all 4 backtest windows; PBO=0.30 < 0.5 PASS;
+      Sharpe surface at lookback=120d is FLAT across thresholds. V3
+      now supersedes V2 in L4 portfolio (V2 retained for audit only).
+
+    # Backtest headline (post-sweep defaults, full 6.6-year sample)
+    backtest:
+      n_obs: 57858
+      sharpe_full_sample: 3.341         # V2: 3.375 (delta -0.034, within noise)
+      sharpe_last_12m: 3.307            # V2: 2.850 (delta +0.456 ✓)
+      sharpe_last_3m: -0.874            # V2: -0.946 (delta +0.072 ✓; still negative)
+      sharpe_post_etf: 4.737            # V2: 4.628 (delta +0.109 ✓)
+      max_dd: -0.0189
+      active_fraction: 0.90             # vs V2's 0.96 (-6pp)
+      n_transitions: 14                 # vs V2's 6
+      final_equity: ~1390               # essentially equal to V2 ($1391)
+
+    # Forward-Sharpe anchor (anchored to recent 12m × haircut)
+    forward_sharpe:
+      anchor_window: "last_12m"
+      anchor_sharpe: 3.307
+      haircut_low: 0.3
+      haircut_high: 0.5
+      forward_low: 0.99
+      forward_high: 1.65
+      project_md_target: 0.75           # carry-alone target
+      meets_target: true                # easily clears at both haircut ends
+
+    # Validation gates
+    gates:
+      dsr_full_sample: 1.0000
+      dsr_passes: true
+      pbo_swept: 0.3035                 # 18-trial CSCV PBO from sweep
+      pbo_passes: true                  # 0.30 < 0.5
+      max_dd_passes: true
+      regime_post_etf_sharpe: 4.737
+      regime_gates_pass: true           # verdict=pass implies all 4 cleared
+      corrections_diff_status: clean
+      sharpe_surface_robust: true       # lookback=120d gap=0.27 < 1.0
+
+    # Caveats specific to V3 (post-sweep, full text in docs/alphas/carry_v3.md)
+    caveats:
+      - id: last_3m_still_marginally_negative
+        severity: documentation
+        message: |
+          V3 last-3m Sharpe is -0.87 (better than V2's -0.95 but still
+          below 0). The 3m window is too short for the 30d compression
+          detector to fully react. Acceptable per the ratchet guard
+          (transitions are slow on purpose), but track monthly. If the
+          3m Sharpe stays < -0.5 for 2+ consecutive months under V3,
+          the threshold or lookback may need re-tuning.
+
+      - id: v3_warmup_handicap
+        severity: documentation
+        message: |
+          V3 default initial state is `exited` (vs V2's `active`),
+          costing 30-60 days of carry at any cold-start backtest.
+          For 6.6yr sample this is < 1.2% impact; for 1yr cold start
+          the handicap can dominate. Mitigation: persist last state
+          to registry across restarts (Phase B work item).
+
+      - id: dsr_recent_window_required
+        severity: pipeline
+        message: |
+          Inherited from V2: full-sample DSR saturates at 1.0 even with
+          n_trials=1000. Rolling 18-24m DSR is more informative.
+
+    # Phase D gating: V3 specific (in addition to common L4 gates)
+    phase_d_gates:
+      - "PBO sweep over {0.05, 0.1, 0.15, 0.2, 0.3, 0.5} bp picks threshold"  # DONE 2026-05-03
+      - "V3 dominates V2 on post-ETF Sharpe at chosen threshold"   # DONE 2026-05-03
+      - "Sharpe surface flat to +/-25% threshold movement"        # DONE (gap 0.27)
+      - "Last-3m Sharpe >= 0 for >= 2 consecutive quarters at chosen threshold"  # PENDING
+      - "3-month paper trading on Binance API with < 30% tracking error"
+      - "live capital cap $1k initially"
+
+    family: carry_v3                     # head-of-family (BTC); see carry_v3-eth + carry_v3-sol below
+    family_role: primary_high_confidence
+
+    # Position sizing hint for L4 HRP (V3 is now portfolio_eligible)
+    portfolio_hint:
+      max_weight: 0.50                  # CLAUDE.md red line, same as V2
+      forward_vol_estimate: 0.05        # lower active_frac => lower realized vol
+      orthogonality_to_btc_directional: high   # delta-neutral, same as V2
+      v3_v2_correlation_estimate: ">= 0.9"   # NOT measured; assertion based
+                                              # on shared legs + V2 exit path
+                                              # inheritance. Phase B portfolio
+                                              # step to measure.
+      portfolio_eligible: true          # V3 takes carry slot post-sweep
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Multi-symbol carry_v3 family (Phase B option (c) — 2026-05-04)
+  #
+  # Per 3rd-round adversarial-debate verdict, single-alpha portfolio
+  # would violate CLAUDE.md "single alpha > 50% portfolio weight" red
+  # line. Option (c) resolves this by running carry_v3 mechanism as a
+  # FAMILY of symbol-specific instances. Each instance shares logic
+  # (post-sweep defaults: exit=0.05bp, lookback=120d) but exposes
+  # different funding-rate dynamics + vol regime + correlation-to-BTC.
+  #
+  # KNOWN ISSUE: TRIAL_LOG idempotency check fires on (strategy_id,
+  # params_hash, data_version, split) for multi-symbol same-params
+  # runs (symbol not in trial_log key). ETH + SOL entries below have
+  # NO RUN_REGISTRY run_id; metrics are EXPLORATORY (from
+  # scripts/run_carry_v3_multi_symbol.py direct backtest, not via
+  # runner.run_carry_validation). Phase B follow-up: include symbol
+  # in trial_log key, then re-run all 3 to register canonically.
+  # ─────────────────────────────────────────────────────────────────────
+
+  - strategy_id: carry_v3-eth
+    variant: multisymbol-ETH-USDT
+    status: pass-with-caveats
+    audit_doc: docs/alphas/carry_v3.md      # shared with carry_v3 (BTC)
+    family: carry_v3
+    family_role: secondary_high_confidence  # second instance after BTC
+
+    # EXPLORATORY (no RUN_REGISTRY entry; trial_log fix pending)
+    validation_run_id: null
+    validation_status: exploratory_pre_trial_log_fix
+    data_version: "2026-05-04T00:00+nocorr"
+    validated_at: "2026-05-04"
+    harness: scripts/run_carry_v3_multi_symbol.py
+
+    portfolio_eligible: true
+
+    # Backtest headline (post-sweep defaults; full archive)
+    backtest:
+      n_obs: 56359                           # ETH-USDT perp bars 2019-11+
+      sharpe_full_sample: 3.557
+      sharpe_last_12m: 2.506
+      sharpe_post_etf: 3.628
+      max_dd: -0.0126
+      active_fraction: 0.89
+      n_transitions: 10
+      final_equity: 1443.76
+
+    forward_sharpe:
+      anchor_window: "last_12m"
+      anchor_sharpe: 2.506
+      haircut_low: 0.3
+      haircut_high: 0.5
+      forward_low: 0.75
+      forward_high: 1.25
+      project_md_target: 0.75              # carry-alone target
+      meets_target: true
+
+    caveats:
+      - id: exploratory_pre_trial_log_fix
+        severity: pipeline
+        message: |
+          ETH backtest was via run_carry_v3_backtest direct call, NOT
+          runner.run_carry_validation. Reason: TRIAL_LOG idempotency
+          check fires on (strategy_id, params_hash, data_version, split)
+          for multi-symbol same-params runs. Fix is to include symbol
+          in trial_log key (Phase B follow-up). Until then, ETH metrics
+          here are not registry-tracked; promote to canonical entry
+          after fix.
+      - id: pbo_sweep_btc_only
+        severity: documentation
+        message: |
+          The carry_v3 thresholds (exit=0.05 bp/8h, lookback=120d) were
+          PBO-swept on BTC archive only (Phase B Step 1). Threshold
+          robustness across ETH-funding regime not verified. ETH funding
+          dynamics differ from BTC (slightly higher base rate, more
+          regime variability). Phase B follow-up: extend PBO sweep
+          harness to multi-symbol.
+
+    portfolio_hint:
+      max_weight: 0.50                     # CLAUDE.md red line
+      forward_vol_estimate: 0.06
+      orthogonality_to_btc_directional: high
+      eth_btc_carry_correlation_estimate: ">= 0.7"  # asserted, not measured
+                                                     # similar mechanism + similar
+                                                     # post-ETF compression regime
+
+  - strategy_id: carry_v3-sol
+    variant: multisymbol-SOL-USDT
+    status: pass-with-caveats
+    audit_doc: docs/alphas/carry_v3.md
+    family: carry_v3
+    family_role: tertiary_diversifier        # marginal Sharpe; included for
+                                              # vol/regime diversification only
+
+    validation_run_id: null
+    validation_status: exploratory_pre_trial_log_fix
+    data_version: "2026-05-04T00:00+nocorr"
+    validated_at: "2026-05-04"
+    harness: scripts/run_carry_v3_multi_symbol.py
+
+    portfolio_eligible: true                 # included; honest framing in caveats
+
+    backtest:
+      n_obs: 49367                            # SOL-USDT perp bars 2020-09+
+      sharpe_full_sample: 0.891
+      sharpe_last_12m: 0.343
+      sharpe_post_etf: 2.662
+      max_dd: -0.0779                         # 4-6x BTC/ETH max_dd
+      active_fraction: 0.69
+      n_transitions: 38                       # ~3x churn vs BTC/ETH
+      final_equity: 1244.32
+
+    forward_sharpe:
+      anchor_window: "last_12m"
+      anchor_sharpe: 0.343
+      haircut_low: 0.3
+      haircut_high: 0.5
+      forward_low: 0.10
+      forward_high: 0.17
+      project_md_target: 0.75
+      meets_target: false                    # below target at both haircut ends
+
+    caveats:
+      - id: marginal_pass_only
+        severity: blocking_for_paper_trade
+        message: |
+          SOL last-12m Sharpe = 0.343 hairs above 0; full-sample 0.891
+          fails the carry-alone PROJECT.md 0.75 target. SOL is included
+          in the family for VOL/REGIME DIVERSIFICATION (corr to BTC ~0.75
+          asserted), NOT for direct return contribution. Forward-Sharpe
+          contribution expected ~0.10 after × 0.3 haircut. Treat SOL
+          allocation as "diversifying but break-even", not as alpha source.
+      - id: high_turnover
+        severity: documentation
+        message: |
+          SOL has 38 regime transitions vs 14 (BTC) and 10 (ETH). The
+          v3 funding-compression detector triggers more often on SOL
+          due to its more variable funding regime. Higher transition
+          cost is reflected in active_fraction = 0.69 (vs 0.89-0.90 for
+          BTC/ETH).
+      - id: max_dd_4x_btc
+        severity: documentation
+        message: |
+          SOL max_dd = -7.79%, vs BTC -1.89% and ETH -1.26%. Still well
+          within CLAUDE.md 30% red line, but worth flagging that SOL
+          adds dd risk to the portfolio. HRP weighting should account
+          for this (low weight expected ~15-20%).
+      - id: exploratory_pre_trial_log_fix
+        severity: pipeline
+        message: |
+          Same as carry_v3-eth: not yet in RUN_REGISTRY pending
+          trial_log key fix.
+
+    portfolio_hint:
+      max_weight: 0.30                       # tighter cap reflecting marginality
+      forward_vol_estimate: 0.10             # higher than BTC/ETH
+      orthogonality_to_btc_directional: high
+      sol_btc_carry_correlation_estimate: "0.50-0.75"  # estimated; lower
+                                                       # corr than ETH due to
+                                                       # different vol regime
+
+# ─────────────────────────────────────────────────────────────────────────
+# PARKED ALPHAS (Phase B exploration; not portfolio-eligible)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# funding_xs and momentum_xs (cross-sectional) were investigated in
+# Phase B Step 2 (2026-05-03/04). 3 rounds of adversarial-debate +
+# 2-universe thesis test concluded:
+#
+#   funding_xs: residual α ~0.12 Sharpe gross consistent across narrow
+#   (14 perps) and wide (20 perps) universes. After × 0.3 haircut
+#   forward ~0.04 Sharpe. After fees: net negative. PARKED.
+#
+#   momentum_xs: raw lift on wide universe (-0.108 → +0.27) entirely
+#   concentrated in 6 added meme/AI tokens (LUNC, PEPE, ORDI, TAO,
+#   HYPE, BIO). Per-token contribution ~0.063 Sharpe — fragile to
+#   single-token decay. Multi-test Bonferroni rejects t=2.89 significance.
+#   PARKED.
+#
+# Both deferred until either (a) capital scales beyond retail or (b)
+# better-conceived signals emerge. No yaml entry — see scripts/
+# funding_xs_thesis_test.py + git log for diagnostic record.

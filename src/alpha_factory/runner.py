@@ -122,6 +122,7 @@ import json
 import logging
 import math
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -130,7 +131,7 @@ from typing import Any
 import polars as pl
 
 from alpha_factory.alpha.carry import (
-    STRATEGY_ID as CARRY_STRATEGY_ID,
+    STRATEGY_ID as _DEFAULT_STRATEGY_ID,
 )
 from alpha_factory.alpha.carry import (
     CarryArtifacts,
@@ -528,7 +529,7 @@ def _evaluate_verdict(
 def run_carry_validation(
     symbol: str,
     variant: str,
-    params: CarryParams,
+    params: Any,
     *,
     klines_df: pl.DataFrame,
     funding_df: pl.DataFrame,
@@ -539,6 +540,8 @@ def run_carry_validation(
     trial_split: str = TRIAL_SPLIT_OUT_OF_SAMPLE,
     n_bootstrap: int = 1000,
     pbo_override: float | None = None,
+    strategy_id: str | None = None,
+    backtest_fn: Callable[..., CarryArtifacts] | None = None,
 ) -> RunReport:
     """Run carry V2 backtest end-to-end and persist L3 validation artifacts.
 
@@ -593,9 +596,15 @@ def run_carry_validation(
           stratification skipped.
         - Otherwise: full pipeline runs; verdict reflects gates.
     """
+    # Resolve pluggable kwargs (default = V2 carry; V3+ pass overrides).
+    if strategy_id is None:
+        strategy_id = _DEFAULT_STRATEGY_ID
+    if backtest_fn is None:
+        backtest_fn = run_carry_backtest
+
     archive_state = get_archive_state()
     run_id = register_run(
-        CARRY_STRATEGY_ID,
+        strategy_id,
         variant,
         params.as_dict(),
         [symbol],
@@ -609,7 +618,7 @@ def run_carry_validation(
     # particular is a likely failure point and MUST flip status to failed
     # so list_validated_alphas does not silently miss the row.
     try:
-        artifacts = run_carry_backtest(
+        artifacts = backtest_fn(
             symbol,
             run_id,
             params,
@@ -632,26 +641,26 @@ def run_carry_validation(
             artifacts.legs,
             BACKTESTS_LEG_ROOT,
             run_id,
-            CARRY_STRATEGY_ID,
+            strategy_id,
             BACKTEST_LEG_SCHEMA,
         )
         _write_year_partitioned(
             artifacts.contrib,
             BACKTESTS_CONTRIB_ROOT,
             run_id,
-            CARRY_STRATEGY_ID,
+            strategy_id,
             PER_SYMBOL_CONTRIB_SCHEMA,
         )
         _write_year_partitioned(
             artifacts.equity_curve,
             BACKTESTS_EQUITY_ROOT,
             run_id,
-            CARRY_STRATEGY_ID,
+            strategy_id,
             EQUITY_CURVE_SCHEMA,
         )
         _write_result_row(
             run_id=run_id,
-            strategy_id=CARRY_STRATEGY_ID,
+            strategy_id=strategy_id,
             variant=variant,
             params=params,
             universe=[symbol],
@@ -700,7 +709,7 @@ def run_carry_validation(
         )
         return RunReport(
             run_id=run_id,
-            strategy_id=CARRY_STRATEGY_ID,
+            strategy_id=strategy_id,
             verdict=VERDICT_FAIL,
             metrics=empty_summary,
             regime_metrics=pl.DataFrame(schema=REGIME_METRICS_SCHEMA),
@@ -726,7 +735,7 @@ def run_carry_validation(
     sharpe_for_log = metrics["sharpe"]
     if not (isinstance(sharpe_for_log, float) and math.isnan(sharpe_for_log)):
         log_trial(
-            CARRY_STRATEGY_ID,
+            strategy_id,
             params.as_dict(),
             evaluated_at=datetime.now(UTC),
             data_version=archive_state.data_version,
@@ -743,13 +752,13 @@ def run_carry_validation(
     regime_metrics = stratify_metrics(
         artifacts.equity_curve, regimes, periods_per_year=periods_per_year,
     )
-    _write_regimes(regime_metrics, run_id, CARRY_STRATEGY_ID)
+    _write_regimes(regime_metrics, run_id, strategy_id)
 
     # DSR. n_trials reflects unique parameter combinations explored to
     # date for this strategy_id (current trial included via log_trial
     # above). Bootstrap CI with deterministic RNG salted by run_id +
     # SALT_DSR_BOOTSTRAP for reproducibility.
-    n_trials = max(count_trials(CARRY_STRATEGY_ID), 1)
+    n_trials = max(count_trials(strategy_id), 1)
     dsr_rng = make_rng(run_id, SALT_DSR_BOOTSTRAP)
     dsr_point, dsr_lo, dsr_hi = deflated_sharpe_bootstrap_ci(
         artifacts.equity_curve["period_ret_net"],
@@ -807,7 +816,7 @@ def run_carry_validation(
 
     return RunReport(
         run_id=run_id,
-        strategy_id=CARRY_STRATEGY_ID,
+        strategy_id=strategy_id,
         verdict=verdict,
         metrics=summary,
         regime_metrics=regime_metrics,
