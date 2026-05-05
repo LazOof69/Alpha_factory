@@ -19,6 +19,7 @@ dependencies = [
     "xlsxwriter>=3.2",        # polars write_excel backend (needed for FS reports)
     "tqdm>=4.66",             # progress bars on long historical fetches
     "python-dotenv>=1.0",     # any future API keys (Binance public endpoints don't need auth)
+    "tzdata>=2024.1",         # Windows zoneinfo backing (polars iter_rows on tz-aware crashes without it)
 ]
 
 [project.optional-dependencies]
