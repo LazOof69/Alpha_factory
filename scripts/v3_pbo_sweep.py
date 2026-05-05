@@ -1,4 +1,4 @@
-"""V3 PBO sweep on BTC archive — Phase B Step 1 follow-up.
+"""V3 PBO sweep — Phase B Step 1 follow-up + Phase B.2 cross-symbol.
 
 Sweeps V3 funding-compression detector over a 2-D grid of
 (exit_compression_30dma, compression_lookback_settlements):
@@ -17,11 +17,22 @@ Reports:
   - Best-trial comparison vs V2 baseline.
   - Verdict: does any V3 trial supersede V2 on post-ETF Sharpe?
 
+NOTE on V2 baseline across symbols: V2 defaults were originally
+calibrated against BTC funding regimes. When this script is run on
+ETH or SOL the V2 numbers are still mechanically defined (same code
+path, same params), but the dominance comparison should be read as
+"V3 vs symbol-agnostic V2 baseline" rather than "V3 vs symbol-tuned
+V2". The PBO and best-trial robustness numbers are symbol-internal
+and unaffected.
+
 USAGE:
-    uv run python scripts/v3_pbo_sweep.py
+    uv run python scripts/v3_pbo_sweep.py                  # BTC default
+    uv run python scripts/v3_pbo_sweep.py --symbol ETH-USDT
+    uv run python scripts/v3_pbo_sweep.py --symbol SOL-USDT
 """
 from __future__ import annotations
 
+import argparse
 import logging
 from datetime import UTC, datetime
 from itertools import product
@@ -41,7 +52,7 @@ from alpha_factory.validation.pbo import pbo as compute_pbo
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
 
-SYMBOL = "BTC-USDT"
+DEFAULT_SYMBOL = "BTC-USDT"
 DATA_DIR = Path("data")
 ETF_LAUNCH = datetime(2024, 1, 11, tzinfo=UTC)
 
@@ -69,17 +80,17 @@ REENTRY_RATIO = 2.0
 # ── Archive loading ──────────────────────────────────────────────────────
 
 
-def _load_klines() -> pl.DataFrame:
+def _load_klines(symbol: str) -> pl.DataFrame:
     paths = list((DATA_DIR / "klines").glob("year=*/data.parquet"))
     return pl.concat([pl.read_parquet(str(p)) for p in paths]).filter(
-        pl.col("symbol") == SYMBOL,
+        pl.col("symbol") == symbol,
     )
 
 
-def _load_funding() -> pl.DataFrame:
+def _load_funding(symbol: str) -> pl.DataFrame:
     paths = list((DATA_DIR / "funding").glob("year=*/data.parquet"))
     return pl.concat([pl.read_parquet(str(p)) for p in paths]).filter(
-        pl.col("symbol") == SYMBOL,
+        pl.col("symbol") == symbol,
     )
 
 
@@ -148,23 +159,32 @@ def _summarize(label: str, art) -> dict:
 # ── Sweep ────────────────────────────────────────────────────────────────
 
 
-def main() -> None:
+def main(symbol: str = DEFAULT_SYMBOL) -> None:
+    log.info("=" * 60)
+    log.info("V3 PBO sweep on %s", symbol)
+    log.info("=" * 60)
     log.info("loading L1 archive...")
-    klines = _load_klines()
-    funding = _load_funding()
+    klines = _load_klines(symbol)
+    funding = _load_funding(symbol)
     log.info("klines=%d funding=%d", klines.height, funding.height)
+    if klines.height == 0 or funding.height == 0:
+        raise RuntimeError(
+            f"empty archive for {symbol}: klines={klines.height} "
+            f"funding={funding.height}",
+        )
 
-    # V2 baseline
-    log.info("running V2 baseline...")
+    # V2 baseline (NOTE: defaults are BTC-tuned; on ETH/SOL use as
+    # symbol-agnostic floor, not as symbol-fitted competitor)
+    log.info("running V2 baseline (BTC-tuned defaults)...")
     v2_art = run_carry_backtest(
-        SYMBOL, "v2-baseline", CarryParams(),
+        symbol, f"v2-baseline-{symbol}", CarryParams(),
         klines_df=klines, funding_df=funding,
     )
     v2 = _summarize("V2", v2_art)
 
     # V3 sweep: 6 thresholds x 3 lookbacks = 18 trials
     grid = list(product(EXIT_THRESHOLDS, LOOKBACK_SETTLEMENTS))
-    log.info("running V3 sweep: %d trials...", len(grid))
+    log.info("running V3 sweep: %d trials on %s...", len(grid), symbol)
 
     trials = []
     for exit_thr, lookback in grid:
@@ -174,7 +194,7 @@ def main() -> None:
             compression_lookback_settlements=lookback,
         )
         art = run_carry_v3_backtest(
-            SYMBOL, f"sweep_{exit_thr:.6f}_{lookback}", params,
+            symbol, f"sweep_{symbol}_{exit_thr:.6f}_{lookback}", params,
             klines_df=klines, funding_df=funding,
         )
         s = _summarize(f"V3-{exit_thr * 1e4:.2f}bp/{lookback}d", art)
@@ -196,12 +216,14 @@ def main() -> None:
     returns_matrix = np.column_stack([t["_returns"] for t in trials])
     log.info("PBO returns matrix shape: %s", returns_matrix.shape)
 
-    rng = make_rng("v3_pbo_sweep_2026_05_03", SALT_PBO_PARTITION)
+    rng = make_rng(f"v3_pbo_sweep_{symbol}_2026_05_04", SALT_PBO_PARTITION)
     pbo_value = compute_pbo(returns_matrix, n_partitions="auto", rng=rng)
     log.info("PBO = %.4f (>= 0.5 means likely overfit)", pbo_value)
 
     # ── Print sweep table ──────────────────────────────────────────────
     print()
+    print("=" * 110)
+    print(f"V3 PBO SWEEP RESULTS — symbol={symbol}")
     print("=" * 110)
     print(
         f"{'exit_bp':>8} | {'lkbk':>4} | {'full_S':>7} | {'12m_S':>7} | "
@@ -312,5 +334,16 @@ def main() -> None:
     print("=" * 110)
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument(
+        "--symbol",
+        default=DEFAULT_SYMBOL,
+        help=f"Trading symbol (default: {DEFAULT_SYMBOL})",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    main()
+    args = _parse_args()
+    main(symbol=args.symbol)
