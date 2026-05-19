@@ -15,6 +15,50 @@
 # Forward-Sharpe entries follow CLAUDE.md "× 0.3-0.5 haircut" rule and
 # are sourced from the most recent rolling 12-24m window, NOT the
 # full backtest aggregate (see audit docs for derivation).
+#
+# ─────────────────────────────────────────────────────────────────────────
+# ⚠ PROVENANCE LOSS — loss 2026-05-01 · recorded 2026-05-13 (post debate)
+# ─────────────────────────────────────────────────────────────────────────
+# The production L1 archive (data/klines, data/funding), all backtest
+# artifacts (data/validation/), and RUN_REGISTRY + TRIAL_LOG
+# (data/.state/registry/) that produced EVERY number in this file were
+# DESTROYED in the 2026-05-01 OneDrive→ASCII relocation (gitignored, not
+# carried over; Phase A-B ran on the Windows box, not quant-1).
+# Exhaustively verified unrecoverable 2026-05-13.
+#
+# Consequence (LdP-honest, per strategy-validation skill):
+#   * Every backtest / PBO / DSR / Sharpe figure below is FROZEN
+#     HISTORICAL and NOT REPRODUCIBLE. The audit trail required by the
+#     CLAUDE.md red line "no Sharpe/DSR without strategy-validation
+#     audit" no longer exists.
+#   * No alpha here currently satisfies the CLAUDE.md L4 red line
+#     "DSR>0 AND PBO≤0.5" in a *verifiable* way → all carry_v3-family
+#     entries are SUSPENDED + portfolio_eligible:false until re-backed
+#     by Phase C paper-trade on a fresh reproducible data_version.
+#   * Numbers are RETAINED (not deleted) as honest historical record;
+#     deletion would itself be tampering. They evidence prior reasoning,
+#     NOT a current validated claim.
+#
+# Requalification path: Phase C 3-month paper-trade is now the SOLE
+# forward validation gate (it does not consume the lost archive).
+#
+# Structural lesson: gitignored archive had no backup → single point of
+# loss. Phase C event-log-as-source-of-truth (v2 design) + host-side
+# snapshot policy is the structural fix.
+#
+# `status` value added: suspended now also covers "provenance lost,
+# pending paper-trade re-backing" (not only "pending V-next fix").
+# ─────────────────────────────────────────────────────────────────────────
+
+registry_provenance:
+  status: ARCHIVE_LOST
+  loss_event_date: "2026-05-01"
+  recorded_at: "2026-05-13"
+  lost: [data/klines, data/funding, data/validation, "data/.state/registry"]
+  reproducible: false
+  all_numbers_are: frozen_historical_record_not_current_claim
+  requalification_path: phase_c_paper_trade_3mo
+  affected_entries: [carry_v2, carry_v3, carry_v3-eth, carry_v3-sol]
 
 alphas:
   - strategy_id: carry_v2
@@ -150,17 +194,28 @@ alphas:
 
   - strategy_id: carry_v3
     variant: v3-post-sweep-defaults
-    status: pass-with-caveats
+    status: suspended                   # was pass-with-caveats; demoted 2026-05-13 (provenance loss)
     audit_doc: docs/alphas/carry_v3.md
 
+    # ⚠ PROVENANCE LOST 2026-05-01 — see registry_provenance block at top.
+    # All numbers below are FROZEN HISTORICAL, not reproducible (archive +
+    # RUN_REGISTRY + TRIAL_LOG destroyed). run_id 053ee062 no longer
+    # resolves to any artifact. Demoted to suspended + portfolio_eligible
+    # false per CLAUDE.md red lines (no verifiable DSR/PBO). Sole
+    # requalification: Phase C 3-month paper-trade. Numbers retained
+    # un-deleted as honest record.
+    provenance_status: archive_lost_frozen_historical
+    requalification: phase_c_paper_trade_3mo
+
     # Post-PBO-sweep run with locked defaults (exit=0.05 bp/8h, lookback=120d)
-    validation_run_id: 053ee062-5285-4936-b991-6d5cf7839c51
-    data_version: "2026-05-03T05:00+nocorr"
+    # [HISTORICAL — run_id orphaned; artifact destroyed 2026-05-01]
+    validation_run_id: 053ee062-5285-4936-b991-6d5cf7839c51   # ORPHANED
+    data_version: "2026-05-03T05:00+nocorr   [LOST]"
     validated_at: "2026-05-03"
 
-    # Relationship to V2 (V3 supersedes V2 post-sweep)
+    # Relationship to V2 (V3 supersedes V2 post-sweep) — historical only
     supersedes: carry_v2
-    portfolio_eligible: true
+    portfolio_eligible: false           # was true; suspended pending paper-trade re-backing
     sweep_summary:
       script: scripts/v3_pbo_sweep.py
       grid: "6 thresholds {0.05,0.1,0.15,0.2,0.3,0.5} bp x 3 lookbacks {60,90,120}d = 18 trials"

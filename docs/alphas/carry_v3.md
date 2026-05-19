@@ -1,13 +1,27 @@
 # Carry V3 — BTC-USDT Funding Carry, Compression-Aware
 
-> **Status:** PASS-WITH-CAVEATS (L3 verdict pass; PBO sweep complete)
-> **Last revised:** 2026-05-03 (post-sweep update)
-> **Implementation:** [`src/alpha_factory/alpha/carry_v3.py`](../../src/alpha_factory/alpha/carry_v3.py)
-> **Validation run_id:** `053ee062-5285-4936-b991-6d5cf7839c51` (post-sweep defaults)
-> **PBO sweep harness:** [`scripts/v3_pbo_sweep.py`](../../scripts/v3_pbo_sweep.py)
-> **Supersedes V2:** **YES** (post Phase B PBO sweep on 2026-05-03; V3 ties or
-> beats V2 in all 4 backtest windows; PBO=0.30 < 0.5 PASS; Sharpe surface FLAT.
-> V2 retained for audit / cross-check, not portfolio-eligible.)
+> ⚠ **PROVENANCE LOST (2026-05-01).** The production archive, backtest
+> artifacts, and RUN_REGISTRY / TRIAL_LOG that produced **every number in
+> this document** were destroyed in the OneDrive→ASCII relocation and are
+> unrecoverable (exhaustively verified 2026-05-13, post adversarial-debate;
+> Phase A-B ran on the Windows box, not quant-1). All figures below are
+> **frozen historical record, NOT reproducible**. run_id `053ee062` no
+> longer resolves to any artifact. Per strategy-validation rigor +
+> CLAUDE.md red lines (no verifiable DSR/PBO), carry_v3 is **demoted:
+> `suspended`, portfolio_eligible = false**. The economic thesis,
+> mechanism, and locked parameters survive intact in code — what is lost
+> is the *empirical verification*, not the design. Sole requalification
+> path: **Phase C 3-month paper-trade** on a fresh reproducible
+> data_version. Numbers retained un-deleted as honest record (deletion
+> would itself be tampering). See `validated_alphas.yaml`
+> `registry_provenance` block.
+
+> **Status:** SUSPENDED — provenance lost (was PASS-WITH-CAVEATS on a now-destroyed data_version)
+> **Last revised:** 2026-05-13 (provenance-loss demotion)
+> **Implementation:** [`src/alpha_factory/alpha/carry_v3.py`](../../src/alpha_factory/alpha/carry_v3.py) — intact
+> **Validation run_id:** `053ee062-…` — ⚠ ORPHANED (artifact destroyed 2026-05-01)
+> **PBO sweep harness:** [`scripts/v3_pbo_sweep.py`](../../scripts/v3_pbo_sweep.py) — code intact; results unreproducible
+> **Supersedes V2:** historical only — both V2 and V3 numbers are provenance-lost
 > **Multi-symbol scope (Phase B.2):** BTC head-of-family
 > (portfolio-eligible); `carry_v3-eth` `on_deck` (Phase C m2 conditional);
 > `carry_v3-sol` `deferred` — per cross-symbol PBO sweep + 3rd-round
