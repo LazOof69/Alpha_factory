@@ -8,6 +8,10 @@
 > **Supersedes V2:** **YES** (post Phase B PBO sweep on 2026-05-03; V3 ties or
 > beats V2 in all 4 backtest windows; PBO=0.30 < 0.5 PASS; Sharpe surface FLAT.
 > V2 retained for audit / cross-check, not portfolio-eligible.)
+> **Multi-symbol scope (Phase B.2):** BTC head-of-family
+> (portfolio-eligible); `carry_v3-eth` `on_deck` (Phase C m2 conditional);
+> `carry_v3-sol` `deferred` — per cross-symbol PBO sweep + 3rd-round
+> adversarial-debate, 2026-05-05. See "Multi-Symbol Family Extension" below.
 
 ---
 
@@ -161,6 +165,124 @@ Sharpe.
 - `exit_compression_30dma = 0.000005` (0.05 bp/8h)
 - `reentry_compression_30dma = 0.00001` (0.10 bp/8h)
 - `compression_lookback_settlements = 120`
+
+---
+
+## Multi-Symbol Family Extension (Phase B.2)
+
+The 3rd-round adversarial-debate on 2026-05-04 concluded that a 1-alpha
+portfolio (BTC `carry_v3` alone) violates CLAUDE.md's *"single alpha > 50%
+portfolio weight"* red line. Option **(c)** — run `carry_v3` as a FAMILY
+of symbol-specific instances — was the cheapest mitigation: same mechanism,
+different funding-rate / vol regime per symbol.
+
+The family extension was executed in two passes:
+
+1. **Exploratory backtest**
+   ([`scripts/run_carry_v3_multi_symbol.py`](../../scripts/run_carry_v3_multi_symbol.py))
+   ran the BTC-locked V3 defaults (0.05 bp / 120d) on BTC / ETH / SOL with
+   the same archive snapshot. All three symbols passed the L3-gate-approx
+   (full / 12m / post-ETF Sharpe ≥ 0, max_dd ≤ 30%).
+2. **Cross-symbol PBO sweep**
+   ([`scripts/v3_pbo_sweep.py --symbol`](../../scripts/v3_pbo_sweep.py),
+   commit `c1cb0b3`) re-ran the 18-trial grid per symbol to test whether
+   the threshold pick is robust on each symbol's archive INDEPENDENTLY.
+
+### Cross-symbol PBO results
+
+Each symbol's sweep uses the same 6 × 3 grid (`exit_compression_30dma ∈
+{0.05, 0.10, 0.15, 0.20, 0.30, 0.50} bp/8h` × `lookback_settlements ∈
+{60, 90, 120}`).
+
+| Symbol | Archive span | PBO (CSCV, 18 trials) | Gate (< 0.5) | Verdict |
+|--------|--------------|-----------------------|--------------|---------|
+| BTC-USDT | 6.6 yr | **0.3035** | ✓ | **PASS** |
+| ETH-USDT | 5.4 yr | **0.6302** | ✗ | **FAIL** |
+| SOL-USDT | 3.0 yr | **0.6342** | ✗ | **FAIL** |
+
+**Interpretation.** PBO > 0.5 means the in-sample-best trial is *more
+likely than not* to underperform out-of-sample — the threshold pick is
+fitting noise on that symbol's data. ETH and SOL fail the same gate BTC
+clears, despite using the same mechanism. Two factors explain the
+divergence:
+
+1. **Funding regime variability.** ETH (~1 bp/8h base) and SOL (~3 bp/8h
+   base, regime-dependent extremes) have more variable funding
+   distributions than BTC (~0.5 bp/8h). The compression-detector exit
+   threshold has a less stable optimum across windows.
+2. **Sample size.** SOL has 3.0 yr of perp archive (listing 2020-09-14);
+   ETH has 5.4 yr; BTC has 6.6 yr. Shorter sample gives CSCV more chance
+   to score the IS-best as a noise pick.
+
+The exploratory backtests' positive Sharpe **does not contradict** the PBO
+fail. PBO is a robustness gauge over hyperparameter selection, not a
+profitability gauge. The intended mitigation for the family is to **lock
+the threshold from BTC's PBO sweep** (0.05 bp / 120d) and apply it
+unchanged to ETH / SOL — not to run a fresh per-symbol PBO sweep to pick
+each threshold. The cross-symbol PBO above is a *diagnostic* showing what
+*would* have happened if we did pick per-symbol. The risk that remains
+even with BTC-locked params is **information leakage from BTC**: the
+chosen 0.05/120d came from a sweep, so it carries one round of fitting;
+porting unchanged is more conservative than re-tuning, but not
+overfit-free. This is recorded in `validated_alphas.yaml` as caveat
+`information_leakage_btc_param_port` on the ETH / SOL entries.
+
+### ETH at BTC-locked params (single-trial diagnostic)
+
+For comparison: with the BTC-locked threshold (0.05 bp / 120d) applied
+unchanged, ETH-USDT backtest on full archive produces:
+
+| Window | ETH Sharpe (BTC-locked params) |
+|--------|-------------------------------|
+| full sample | 3.557 |
+| last 12m | 2.506 |
+| post-ETF | 3.628 |
+| max_dd | −1.26% |
+
+The numbers exceed Phase C carry-alone target (0.75) at every window, and
+the post-ETF figure is comparable to BTC's 4.737. The PBO fail does NOT
+invalidate these — it invalidates the *individually-fit* threshold pick
+on ETH data. Whether the BTC-locked threshold is the right call on ETH
+forward is what Phase C m2 paper-trade will surface.
+
+### Adversarial-debate scope verdict (3rd round, 2026-05-05)
+
+The cross-symbol PBO results fed back into a 3rd-round adversarial-debate
+on whether to ship the 3-alpha family or shrink scope. The debate
+concluded option **(a')**: scope-shrink with conditional re-entry. The
+verdict is recorded in `validated_alphas.yaml` via commit `9720d17`.
+
+| Family member | Phase C milestone | Status | Rationale |
+|---------------|-------------------|--------|-----------|
+| `carry_v3` (BTC) | **m1** — included from day 1 | `portfolio_eligible: true` | PBO PASS; only solid alpha; ship the shippable asset. |
+| `carry_v3-eth` | **m2** — conditional on BTC m1 paper-trade success | `on_deck` (`portfolio_eligible: false`) | PBO FAIL on per-symbol sweep, but information-leakage-mitigated via BTC-locked threshold. Verify tracking error on paper trade before promoting. |
+| `carry_v3-sol` | **deferred indefinitely** | `deferred` (`portfolio_eligible: false`) | PBO FAIL + marginal backtest (full-Sharpe 0.89, last-12m 0.34, max_dd −7.8%) + shortest sample (3.0 yr). Low conviction; revisit only if capital scales or SOL funding regime stabilises. |
+
+This matches CLAUDE.md's *"Suspicion over enthusiasm"* principle. The
+cross-symbol PBO was the suspicion-test that downgraded the 3-alpha
+family to **1 + conditional**.
+
+### Implications
+
+- **`validated_alphas.yaml`** carries the downgraded statuses (commit
+  `9720d17`). Earlier exploratory entries that claimed
+  `portfolio_eligible: true` for ETH/SOL have been retracted. New caveats
+  `per_symbol_pbo_fail` (severity: blocking_for_portfolio_entry) and
+  `information_leakage_btc_param_port` (severity: documentation) recorded
+  on the ETH / SOL entries. Status legend gained two values: `on_deck`
+  (registered, NOT portfolio-eligible, waiting on a defined trigger) and
+  `deferred` (pushed back without a defined trigger; promotion requires
+  explicit user decision).
+- **1-alpha portfolio red-line still binds.** Until ETH clears m2's
+  paper-trade gate, the portfolio remains 1-alpha — violating the
+  *"single alpha > 50% portfolio weight"* red line. Mitigation paths
+  require Phase C work and are out of scope here; see
+  [`docs/phase_c_paper_trade_plan.md`](../phase_c_paper_trade_plan.md)
+  (and its v2 successor on branch `claude/reverent-swirles-bc2bff`) for
+  the live-money bridge plan.
+- **Phase B `funding_xs` and `momentum_xs`** were also explored as
+  diversifying alphas but PARKED after 3 rounds of adversarial-debate.
+  See the `validated_alphas.yaml` PARKED ALPHAS block for the verdict.
 
 ---
 

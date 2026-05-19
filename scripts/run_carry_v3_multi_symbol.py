@@ -11,11 +11,26 @@ with funding-compression detector) but differs in:
   - correlation to BTC directional (BTC=1.0, ETH~0.85, SOL~0.75)
   - size-factor exposure (mega / large / large-mid)
 
-This script runs each instance through `runner.run_carry_validation`
-(L3 spine) using the post-sweep V3 defaults and produces a
-side-by-side comparison with the BTC baseline.
+Each instance is registered through `runner.run_carry_validation`
+(L3 spine) under a distinct strategy_id matching validated_alphas.yaml:
+
+  BTC-USDT -> "carry_v3"       (head-of-family)
+  ETH-USDT -> "carry_v3-eth"
+  SOL-USDT -> "carry_v3-sol"
+
+Distinct strategy_ids naturally separate the per-strategy TRIAL_LOG
+parquet files, so multi-symbol same-params runs do not collide on the
+(strategy_id, params_hash, data_version, split) idempotency key. A
+prior version of this script bypassed the runner; the family-naming
+convention above makes that bypass unnecessary.
+
+Each invocation appends a fresh RUN_REGISTRY row per strategy_id;
+`list_validated_alphas` returns the latest row per strategy_id, so a
+re-run supersedes prior canonical entries for the same family member.
 
 USAGE:
+    # Run from a CWD where the L1 archive lives at ./data/
+    # (typically the main Alpha_factory directory).
     uv run python scripts/run_carry_v3_multi_symbol.py
 """
 from __future__ import annotations
@@ -30,7 +45,7 @@ from alpha_factory.alpha.carry_v3 import (
     CarryV3Params,
     run_carry_v3_backtest,
 )
-from alpha_factory.validation.contracts import validate_equity_curve
+from alpha_factory.runner import run_carry_validation
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
@@ -38,6 +53,14 @@ log = logging.getLogger(__name__)
 DATA_DIR = Path("data")
 ETF_LAUNCH = datetime(2024, 1, 11, tzinfo=UTC)
 SYMBOLS = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+
+# strategy_id naming follows validated_alphas.yaml family convention:
+# BTC is the head-of-family with no symbol suffix.
+SYMBOL_TO_STRATEGY_ID = {
+    "BTC-USDT": "carry_v3",
+    "ETH-USDT": "carry_v3-eth",
+    "SOL-USDT": "carry_v3-sol",
+}
 
 
 def _load_archive() -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -125,34 +148,49 @@ def main() -> None:
         "klines=%d funding=%d", klines.height, funding.height,
     )
 
-    # NOTE: bypass runner.run_carry_validation; TRIAL_LOG idempotency
-    # check fires on (strategy_id, params_hash, data_version, split)
-    # which collides for multi-symbol same-params runs since symbol
-    # is not in the trial key. Phase B follow-up: add symbol to
-    # trial_log key OR scope log_trial behind a flag in runner.
-    # For exploratory metrics only -- not registry-tracked.
+    # BTC returns power the regime classifier across ALL 3 instances
+    # (regime is BTC-led, not strategy-specific). Compute once, share.
+    btc_returns = _btc_returns_for_regime(klines)
 
-    rows = []
+    rows: list[dict] = []
+    reports: list[tuple[str, str, str, str]] = []  # symbol, strategy_id, run_id, verdict
     for symbol in SYMBOLS:
-        log.info("running carry V3 on %s ...", symbol)
+        strategy_id = SYMBOL_TO_STRATEGY_ID[symbol]
+        log.info(
+            "running carry V3 on %s (strategy_id=%s) through runner ...",
+            symbol, strategy_id,
+        )
         params = CarryV3Params()
         kf = klines.filter(pl.col("symbol") == symbol)
         ff = funding.filter(pl.col("symbol") == symbol)
 
-        art = run_carry_v3_backtest(
-            symbol, f"multisymbol-{symbol}", params,
-            klines_df=kf, funding_df=ff,
+        # `daily_volume_per_symbol` here is a placeholder; the runner
+        # uses it only for the advisory `capacity_estimate_usd` metric
+        # (see runner.py CAPACITY ESTIMATE LIMITATION). For accurate
+        # capacity numbers, re-pipe from L1 universe snapshot.
+        report = run_carry_validation(
+            symbol,
+            f"multisymbol-{symbol}",
+            params,
+            klines_df=kf,
+            funding_df=ff,
+            btc_returns_df=btc_returns,
+            daily_volume_per_symbol={symbol: 1e9},
+            strategy_id=strategy_id,
+            backtest_fn=run_carry_v3_backtest,
         )
-        # Validate the equity curve (cheap sanity check)
-        if art.equity_curve.height > 1:
-            validate_equity_curve(art.equity_curve)
 
-        s = _summarize(symbol, art)
+        s = _summarize(symbol, report.artifacts)
+        s["run_id"] = report.run_id
+        s["verdict"] = report.verdict
         rows.append(s)
+        reports.append((symbol, strategy_id, report.run_id, report.verdict))
         log.info(
-            "  %s: full=%.3f  12m=%.3f  postETF=%.3f  active=%.2f  trans=%d",
-            symbol, s["full_sharpe"], s["sharpe_12m"],
-            s["sharpe_post_etf"], s["active_frac"], s["n_transitions"],
+            "  %s: run_id=%s verdict=%s full=%.3f 12m=%.3f postETF=%.3f "
+            "active=%.2f trans=%d",
+            symbol, report.run_id, report.verdict,
+            s["full_sharpe"], s["sharpe_12m"], s["sharpe_post_etf"],
+            s["active_frac"], s["n_transitions"],
         )
 
     # Print comparison
@@ -195,6 +233,18 @@ def main() -> None:
         print(
             "  >>> Insufficient passes; option (c) not viable on current archive.",
         )
+
+    # Canonical RUN_REGISTRY rows produced by this run.
+    # The runner-derived verdict here uses single-run gates; sweep-level
+    # PBO / cross-symbol PBO must be checked separately (see
+    # scripts/v3_pbo_sweep.py for BTC sweep + cross-symbol harness).
+    print()
+    print("CANONICAL RUN_IDS (paste into validated_alphas.yaml):")
+    print("-" * 78)
+    for sym, sid, rid, verdict in reports:
+        print(f"  {sid:18s}  ({sym:10s})  run_id = {rid}  verdict = {verdict}")
+    print("-" * 78)
+    print()
 
 
 if __name__ == "__main__":
