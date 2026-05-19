@@ -9,6 +9,13 @@
 #   pass               — all gates passed without caveats
 #   pass-with-caveats  — gates passed but documented caveats apply;
 #                        Phase D paper-trade gating still required
+#   on_deck            — exists in registry but NOT portfolio-eligible;
+#                        waiting on a defined trigger condition
+#                        (e.g., paper-trade evidence on the head-of-
+#                        family) before re-evaluation
+#   deferred           — pushed back without a defined re-evaluation
+#                        trigger; remains in registry for audit only;
+#                        promote requires explicit user decision
 #   suspended          — temporarily withheld pending V-next fix
 #   failed             — gates rejected; do NOT enter L4
 #
@@ -335,14 +342,41 @@ alphas:
   # scripts/run_carry_v3_multi_symbol.py direct backtest, not via
   # runner.run_carry_validation). Phase B follow-up: include symbol
   # in trial_log key, then re-run all 3 to register canonically.
+  #
+  # 2026-05-04 UPDATE (PR #3 — cross-symbol PBO sweep + adversarial-debate):
+  #
+  #   ETH per-symbol PBO sweep: PBO = 0.6302 — FAIL gate ≤ 0.5
+  #   SOL per-symbol PBO sweep: PBO = 0.6342 — FAIL gate ≤ 0.5
+  #   BTC per-symbol PBO re-verify (new seed): PBO = 0.3035 — PASS
+  #
+  #   Adversarial-debate (3-phase Audit→Attack→Resolve) on initial
+  #   verdict "scope (b) BTC+ETH paper-trade m1" identified three
+  #   landed attacks:
+  #     1. Information leakage — choosing BTC-locked params for ETH
+  #        after seeing ETH 18-trial grid is post-hoc consistent,
+  #        not single-trial.
+  #     2. PBO 0.63 false dichotomy — flat-surface reading ignores
+  #        sample-too-short variance and tailwind-uniform-lift.
+  #     3. Sample heterogeneity — BTC 6.6yr vs SOL 3.0yr.
+  #
+  #   Revised Phase C scope: (a') BTC-only m1; ETH on_deck for m2
+  #   conditional; SOL deferred indefinitely. Status downgrades
+  #   below reflect this verdict.
+  #
+  #   carry_v3 (BTC) PASS verdict and portfolio_eligible: true
+  #   UNCHANGED. Re-verify on new seed gave PBO=0.3035 (identical
+  #   to historical 2026-05-03 number to 4 decimal places — CSCV
+  #   reproducible at this sample size).
   # ─────────────────────────────────────────────────────────────────────
 
   - strategy_id: carry_v3-eth
     variant: multisymbol-ETH-USDT
-    status: pass-with-caveats
+    status: on_deck                         # downgraded 2026-05-04 post
+                                            # cross-symbol PBO sweep
+                                            # (see PR #3, per_symbol_pbo_fail)
     audit_doc: docs/alphas/carry_v3.md      # shared with carry_v3 (BTC)
     family: carry_v3
-    family_role: secondary_high_confidence  # second instance after BTC
+    family_role: family_extension_on_deck   # was: secondary_high_confidence
 
     # EXPLORATORY (no RUN_REGISTRY entry; trial_log fix pending)
     validation_run_id: null
@@ -351,7 +385,21 @@ alphas:
     validated_at: "2026-05-04"
     harness: scripts/run_carry_v3_multi_symbol.py
 
-    portfolio_eligible: true
+    portfolio_eligible: false               # was: true. Per-symbol PBO=0.63
+                                            # FAILS CLAUDE.md red-line ≤ 0.5;
+                                            # promote condition: BTC paper-trade
+                                            # m1 tracking error < 30% AND
+                                            # independent ETH-PBO sweep PASS
+
+    # Activation trigger (Phase C scope)
+    activation_trigger:
+      m1_paper_trade: false                 # paper-trade m1 = BTC-only
+      m2_onboard_conditions:
+        - "carry_v3 (BTC) paper-trade m1 tracking error < 30%"
+        - "no ETH ETF / staking-spot regime shock during m1
+           (funding 8h base rate compression > 50% in 30d window)"
+        - "OPTIONAL but strict: independent ETH PBO sweep
+           re-run on m1-anchored archive snapshot — PBO < 0.5"
 
     # Backtest headline (post-sweep defaults; full archive)
     backtest:
@@ -375,6 +423,30 @@ alphas:
       meets_target: true
 
     caveats:
+      - id: per_symbol_pbo_fail
+        severity: blocking_for_portfolio_entry
+        message: |
+          Cross-symbol PBO sweep on 2026-05-04 (PR #3,
+          scripts/v3_pbo_sweep.py --symbol ETH-USDT) ran 18 trials
+          on ETH archive: PBO = 0.6302 — FAILS CLAUDE.md red-line
+          gate ≤ 0.5. Best ETH trial (0.10bp/90d) ties-or-beats V2
+          in 4/4 windows BUT the high PBO blocks portfolio entry
+          on the strict reading. 3-phase adversarial-debate (same
+          PR) refused to resolve PBO=0.63 as "flat-surface only" —
+          alternative readings (sample-too-short variance,
+          tailwind-uniform lift) are not ruled out. ETH on-deck
+          for paper-trade m2; promote per activation_trigger above.
+      - id: information_leakage_btc_param_port
+        severity: documentation
+        message: |
+          Choosing BTC-locked params (0.05bp/120d) for ETH after
+          having seen the ETH 18-trial grid is post-hoc consistent,
+          NOT a true single-trial port. Strict CLAUDE.md compliance
+          would require ETH params to be selected via independent
+          PBO-validated sweep on data not used for choice. Treat
+          ETH paper-trade Sharpe (if it materialises in m2) as
+          observational, not as carry_v3-eth alpha-validation
+          evidence on its own.
       - id: exploratory_pre_trial_log_fix
         severity: pipeline
         message: |
@@ -386,30 +458,35 @@ alphas:
           here are not registry-tracked; promote to canonical entry
           after fix.
       - id: pbo_sweep_btc_only
-        severity: documentation
+        severity: superseded
         message: |
-          The carry_v3 thresholds (exit=0.05 bp/8h, lookback=120d) were
-          PBO-swept on BTC archive only (Phase B Step 1). Threshold
-          robustness across ETH-funding regime not verified. ETH funding
-          dynamics differ from BTC (slightly higher base rate, more
-          regime variability). Phase B follow-up: extend PBO sweep
-          harness to multi-symbol.
+          SUPERSEDED 2026-05-04 by per_symbol_pbo_fail caveat above.
+          Original concern (BTC-only sweep) was addressed by running
+          per-symbol PBO on ETH; the result FAILED the gate. This
+          caveat retained for audit-trail of how the concern was
+          investigated and resolved.
 
     portfolio_hint:
-      max_weight: 0.50                     # CLAUDE.md red line
+      max_weight: 0.50                     # CLAUDE.md red line if eligible
       forward_vol_estimate: 0.06
       orthogonality_to_btc_directional: high
       eth_btc_carry_correlation_estimate: ">= 0.7"  # asserted, not measured
                                                      # similar mechanism + similar
                                                      # post-ETF compression regime
+      portfolio_eligible: false                     # downgraded; see top-level
+                                                    # portfolio_eligible field
 
   - strategy_id: carry_v3-sol
     variant: multisymbol-SOL-USDT
-    status: pass-with-caveats
+    status: deferred                         # downgraded 2026-05-04 post
+                                              # cross-symbol PBO sweep
+                                              # (see PR #3); no defined
+                                              # re-evaluation trigger,
+                                              # promote requires explicit
+                                              # user decision
     audit_doc: docs/alphas/carry_v3.md
     family: carry_v3
-    family_role: tertiary_diversifier        # marginal Sharpe; included for
-                                              # vol/regime diversification only
+    family_role: deferred_pending_re_eval    # was: tertiary_diversifier
 
     validation_run_id: null
     validation_status: exploratory_pre_trial_log_fix
@@ -417,7 +494,25 @@ alphas:
     validated_at: "2026-05-04"
     harness: scripts/run_carry_v3_multi_symbol.py
 
-    portfolio_eligible: true                 # included; honest framing in caveats
+    portfolio_eligible: false                # was: true. Per-symbol PBO=0.63
+                                              # FAILS gate AND 12m=0.34 below
+                                              # FS pass-gate 0.5 AND max_dd
+                                              # 4-6x BTC/ETH AND 38 transitions
+                                              # vs 14/10 — multiple structural
+                                              # signals for deferral
+
+    # Deferral framing (Phase C scope)
+    deferral:
+      m1_paper_trade: false                  # paper-trade m1 = BTC-only
+      m2_3_paper_trade: false                # ETH onboard at m2, NOT SOL
+      re_evaluation_trigger:
+        - "Optional, not committed: re-evaluate IF carry_v3-eth
+           paper-trade m2-3 shows tracking error < 30% AND
+           SOL funding regime stabilises (n_transitions on a
+           rolling 6m window drops below 30 — current is ~38)"
+        - "Without explicit user decision, SOL stays in registry
+           for audit but does NOT progress through Phase C/D
+           gating regardless of paper-trade signals"
 
     backtest:
       n_obs: 49367                            # SOL-USDT perp bars 2020-09+
@@ -440,15 +535,28 @@ alphas:
       meets_target: false                    # below target at both haircut ends
 
     caveats:
-      - id: marginal_pass_only
-        severity: blocking_for_paper_trade
+      - id: per_symbol_pbo_fail
+        severity: blocking_for_portfolio_entry
         message: |
-          SOL last-12m Sharpe = 0.343 hairs above 0; full-sample 0.891
-          fails the carry-alone PROJECT.md 0.75 target. SOL is included
-          in the family for VOL/REGIME DIVERSIFICATION (corr to BTC ~0.75
-          asserted), NOT for direct return contribution. Forward-Sharpe
-          contribution expected ~0.10 after × 0.3 haircut. Treat SOL
-          allocation as "diversifying but break-even", not as alpha source.
+          Cross-symbol PBO sweep on 2026-05-04 (PR #3,
+          scripts/v3_pbo_sweep.py --symbol SOL-USDT) ran 18 trials
+          on SOL archive: PBO = 0.6342 — FAILS CLAUDE.md red-line
+          gate ≤ 0.5. Sample: 3.0yr SOL archive (vs BTC 6.6yr) —
+          PBO estimate is high-variance at this sample length
+          per CSCV theory. Not portfolio-eligible until either
+          (a) longer sample accumulates AND independent re-sweep
+          PASS, or (b) explicit user override.
+      - id: marginal_pass_only
+        severity: blocking_for_portfolio_entry      # was: blocking_for_paper_trade
+        message: |
+          ESCALATED 2026-05-04: SOL last-12m Sharpe = 0.343 hairs
+          above 0; FAILS FS pass-gate 0.5 (CLAUDE.md "Pass criteria
+          gate: 0.5 Sharpe"). Full-sample 0.891 also fails the
+          carry-alone PROJECT.md 0.75 target. Combined with PBO
+          fail (above), SOL is now deferred. Originally framed as
+          "diversifying but break-even" — that framing assumed
+          portfolio_eligible: true. With portfolio_eligible: false,
+          SOL contributes nothing to portfolio Sharpe.
       - id: high_turnover
         severity: documentation
         message: |
@@ -456,14 +564,27 @@ alphas:
           v3 funding-compression detector triggers more often on SOL
           due to its more variable funding regime. Higher transition
           cost is reflected in active_fraction = 0.69 (vs 0.89-0.90 for
-          BTC/ETH).
+          BTC/ETH). 2.7x churn vs BTC/ETH directly inflates fees +
+          slippage exposure on a per-bar basis.
       - id: max_dd_4x_btc
-        severity: documentation
+        severity: documentation                    # severity unchanged but
+                                                    # context now matters more
         message: |
           SOL max_dd = -7.79%, vs BTC -1.89% and ETH -1.26%. Still well
           within CLAUDE.md 30% red line, but worth flagging that SOL
-          adds dd risk to the portfolio. HRP weighting should account
-          for this (low weight expected ~15-20%).
+          adds dd risk to the portfolio. With deferred status, this
+          is moot for now; if SOL is ever promoted, HRP weighting
+          should reflect the 4-6x BTC/ETH max_dd profile.
+      - id: identical_max_dd_across_18_trials
+        severity: documentation
+        message: |
+          SOL PBO sweep showed max_dd = -7.79% IDENTICAL across all
+          18 parameter trials. Same observation on ETH (-1.26% across
+          all 18). Indicates: V3 funding-compression detector affects
+          EXIT timing but does not affect ENTRY/HOLDING during a price
+          drawdown event. V3 does NOT defend against spot-price
+          drawdown — only against funding compression. Phase D risk
+          model must account for this.
       - id: exploratory_pre_trial_log_fix
         severity: pipeline
         message: |
@@ -471,12 +592,13 @@ alphas:
           trial_log key fix.
 
     portfolio_hint:
-      max_weight: 0.30                       # tighter cap reflecting marginality
+      max_weight: 0.30                       # tighter cap (moot while deferred)
       forward_vol_estimate: 0.10             # higher than BTC/ETH
       orthogonality_to_btc_directional: high
       sol_btc_carry_correlation_estimate: "0.50-0.75"  # estimated; lower
                                                        # corr than ETH due to
                                                        # different vol regime
+      portfolio_eligible: false                       # downgraded; see top-level
 
 # ─────────────────────────────────────────────────────────────────────────
 # PARKED ALPHAS (Phase B exploration; not portfolio-eligible)

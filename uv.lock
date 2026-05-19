@@ -17,6 +17,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "scipy" },
     { name = "tqdm" },
+    { name = "tzdata" },
     { name = "xlsxwriter" },
 ]
 
@@ -44,6 +45,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
     { name = "scipy", specifier = ">=1.12" },
     { name = "tqdm", specifier = ">=4.66" },
+    { name = "tzdata", specifier = ">=2024.1" },
     { name = "xlsxwriter", specifier = ">=3.2" },
 ]
 provides-extras = ["dev"]
