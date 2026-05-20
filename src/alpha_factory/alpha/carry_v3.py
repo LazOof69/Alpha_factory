@@ -88,7 +88,9 @@ REUSED HELPERS (from carry.py):
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import polars as pl
 
@@ -110,6 +112,7 @@ from alpha_factory.validation.schema import (
 __all__ = [
     "STRATEGY_ID",
     "CarryV3Params",
+    "current_regime_state_v3",
     "run_carry_v3_backtest",
 ]
 
@@ -278,8 +281,39 @@ def _compute_regime_states_v3(
     Forward-fills state to non-settlement bars (state can only change
     at settlements).
     """
-    settle = (
-        bars.filter(pl.col("funding_rate").is_not_null())
+    settle = _build_settle_frame(bars, params)
+
+    state_at_settle: dict = {}
+    for open_time, state in _iter_regime_states(settle, params):
+        state_at_settle[open_time] = state
+
+    # Forward-fill to all bars; warmup bars before first settlement = 0.
+    times = bars["open_time"].to_list()
+    states: list[int] = []
+    cur = 0   # V3 warmup-exited
+    for t in times:
+        if t in state_at_settle:
+            cur = state_at_settle[t]
+        states.append(cur)
+
+    return bars.with_columns(regime_state=pl.Series(states, dtype=pl.Int8))
+
+
+# ── State-machine internals (shared by backtest + paper-trade adapter) ───
+
+
+def _build_settle_frame(
+    df: pl.DataFrame, params: CarryV3Params,
+) -> pl.DataFrame:
+    """Project funding settlements + the two rolling means the SM needs.
+
+    Accepts either the joined ``bars`` frame (backtest path) or a raw
+    funding frame (paper-trade adapter path) — both must carry an
+    ``open_time`` column and a ``funding_rate`` column. Rows with null
+    ``funding_rate`` are dropped (non-settlement bars / warmup).
+    """
+    return (
+        df.filter(pl.col("funding_rate").is_not_null())
         .with_columns(
             funding_7dma=pl.col("funding_rate").rolling_mean(
                 window_size=params.lookback_settlements,
@@ -293,7 +327,25 @@ def _compute_regime_states_v3(
         .select(["open_time", "funding_7dma", "funding_30dma"])
     )
 
-    state_at_settle: dict = {}
+
+def _iter_regime_states(
+    settle: pl.DataFrame, params: CarryV3Params,
+) -> Iterator[tuple[Any, int]]:
+    """Walk the V3 state machine over a settle frame; yield (open_time, state).
+
+    ``settle`` must contain ``open_time``, ``funding_7dma``, ``funding_30dma``
+    rows in ascending time order, one per funding-settlement bar
+    (i.e. rows where ``funding_rate`` was not null, with rolling means
+    precomputed via ``_build_settle_frame``).
+
+    Initial state = 0 (V3 warmup-exited; conservative — see module
+    docstring). The ratchet counter ticks during warmup, so the first
+    post-warmup transition is not artificially blocked.
+
+    Shared by ``_compute_regime_states_v3`` (backtest path) and
+    ``current_regime_state_v3`` (paper-trade adapter) so the two paths
+    cannot drift apart.
+    """
     current = 0   # V3 warmup-exited (V2 used 1; V3 chose conservatism)
     settlements_since_last_transition = 0
     min_dur = params.min_state_duration_settlements
@@ -325,16 +377,42 @@ def _compute_regime_states_v3(
         if new != current:
             settlements_since_last_transition = 0
 
-        state_at_settle[row["open_time"]] = new
+        yield row["open_time"], new
         current = new
 
-    # Forward-fill to all bars; warmup bars before first settlement = 0.
-    times = bars["open_time"].to_list()
-    states: list[int] = []
-    cur = 0   # V3 warmup-exited
-    for t in times:
-        if t in state_at_settle:
-            cur = state_at_settle[t]
-        states.append(cur)
 
-    return bars.with_columns(regime_state=pl.Series(states, dtype=pl.Int8))
+def current_regime_state_v3(
+    funding_df: pl.DataFrame, params: CarryV3Params,
+) -> int:
+    """Return the V3 regime state at the end of ``funding_df``.
+
+    Public skeleton-pipeline helper (Phase C paper-trade strategy
+    adapter calls this per cycle, on the rolling funding window).
+    Pure function; deterministic; stateless across calls (the caller
+    owns the window).
+
+    ``funding_df`` must carry ``open_time`` and ``funding_rate`` columns.
+    Rows with null ``funding_rate`` are dropped (warmup or non-settlement
+    bars). Returns 0 when the window contains no settlements at all
+    (V3 warmup-exited initial state). Otherwise returns the last
+    settlement's state: 0 = exited, 1 = active.
+
+    Walking-skeleton caveat (docs/phase_c_infra_design_v3.md §P7):
+        The V3 state machine is sequential — a transition's eligibility
+        depends on ``min_state_duration_settlements`` since the LAST
+        transition. This helper sees only the rows IN the window; if
+        the true last transition happened before window-start, the
+        ratchet counter resets at window-start. Self-heals once the
+        forward archive accumulates past
+        ``compression_lookback_settlements`` (default 120 = 40d).
+    """
+    # A bare/empty frame is a valid input at cron startup (no fetches
+    # have landed yet) — return the V3 warmup-exited initial state
+    # rather than letting polars raise on a missing column.
+    if funding_df.height == 0 or "funding_rate" not in funding_df.columns:
+        return 0
+    settle = _build_settle_frame(funding_df, params)
+    last_state = 0
+    for _open_time, state in _iter_regime_states(settle, params):
+        last_state = state
+    return last_state
