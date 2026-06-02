@@ -70,6 +70,7 @@ __all__ = [
     "PositionBook",
     "SimulatedFill",
     "compute_fills",
+    "fill_from_event_data",
     "latest_close_by_market",
     "replay_position_book",
     "step_paper_fill_sim",
@@ -155,13 +156,17 @@ def replay_position_book(
     for ev in events:
         if ev.get("kind") != "fill_simulated":
             continue
-        fill = _fill_from_event_data(ev["data"])
+        fill = fill_from_event_data(ev["data"])
         book = _apply_fill(book, fill)
     return book
 
 
-def _fill_from_event_data(data: dict) -> SimulatedFill:
-    """Reconstruct SimulatedFill from a fill_simulated event's data payload."""
+def fill_from_event_data(data: dict) -> SimulatedFill:
+    """Reconstruct SimulatedFill from a fill_simulated event's data payload.
+
+    Shared by ``replay_position_book`` (here) and the daily reconcile
+    (stage [5]) so both rebuild fills from the spine identically.
+    """
     return SimulatedFill(
         symbol=data["symbol"],
         market=data["market"],
