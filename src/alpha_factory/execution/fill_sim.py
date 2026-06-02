@@ -65,12 +65,15 @@ from alpha_factory.execution.strategy import RollingWindow, TargetPosition
 log = logging.getLogger(__name__)
 
 __all__ = [
+    "BOOK_AFFECTING_KINDS",
     "DEFAULT_TAKER_FEE_BPS",
+    "DUST_QUANTITY",
     "Position",
     "PositionBook",
     "SimulatedFill",
     "compute_fills",
     "fill_from_event_data",
+    "fill_to_event_data",
     "latest_close_by_market",
     "replay_position_book",
     "step_paper_fill_sim",
@@ -88,7 +91,20 @@ DEFAULT_TAKER_FEE_BPS: dict[str, float] = {
 
 # Below this absolute quantity_base we treat the position as fully closed
 # and drop it from the book — guards against float dust at flip boundaries.
-_DUST_QUANTITY: float = 1e-12
+# Shared with the halt module (stage [6]) so the close-out threshold cannot
+# drift between routine fills and halt unwinds.
+DUST_QUANTITY: float = 1e-12
+
+# Event kinds that MOVE the position book. Both routine fills
+# (``fill_simulated``) and halt-driven closures (``unwind_simulated``,
+# stage [6]) change positions and MUST be folded by any book replay —
+# otherwise a post-halt restart would still see a position that was
+# already closed. The two kinds are kept distinct ONLY for audit
+# (why a position changed), never for book math.
+BOOK_AFFECTING_KINDS: frozenset[str] = frozenset({
+    "fill_simulated",
+    "unwind_simulated",
+})
 
 
 # ── Data model ────────────────────────────────────────────────────────────
@@ -143,8 +159,10 @@ class SimulatedFill:
 def replay_position_book(
     event_log_path: Path = PAPER_EVENTS_PATH,
 ) -> PositionBook:
-    """Project the current position book from ``fill_simulated`` events.
+    """Project the current position book from book-affecting events.
 
+    Folds BOTH ``fill_simulated`` (routine) and ``unwind_simulated``
+    (halt-driven closure, stage [6]) — see ``BOOK_AFFECTING_KINDS``.
     Scan-once over the log; left-fold each fill through ``_apply_fill``.
     O(N) per cycle — at 3 months * 3 cycles/day * 2 legs ≈ 540 events
     this is trivially cheap. Ordering: events are appended in cycle
@@ -154,7 +172,7 @@ def replay_position_book(
     events = read_events(event_log_path)
     book: PositionBook = {}
     for ev in events:
-        if ev.get("kind") != "fill_simulated":
+        if ev.get("kind") not in BOOK_AFFECTING_KINDS:
             continue
         fill = fill_from_event_data(ev["data"])
         book = _apply_fill(book, fill)
@@ -252,7 +270,7 @@ def compute_fills(
         current = book[key].notional_quote if key in book else 0.0
         target_notional = target_legs.get(key, 0.0)
         delta = target_notional - current
-        if abs(delta) <= _DUST_QUANTITY:
+        if abs(delta) <= DUST_QUANTITY:
             continue
 
         price = prices.get(market)
@@ -312,7 +330,7 @@ def _apply_fill(book: PositionBook, fill: SimulatedFill) -> PositionBook:
         if crossing_zero:
             new_avg = fill.fill_price
             new_notional = new_qty * fill.fill_price
-        elif abs(new_qty) <= _DUST_QUANTITY:
+        elif abs(new_qty) <= DUST_QUANTITY:
             # Fully closed — handled below by removing the key.
             new_avg = 0.0
             new_notional = 0.0
@@ -327,7 +345,7 @@ def _apply_fill(book: PositionBook, fill: SimulatedFill) -> PositionBook:
             new_avg = cur.avg_entry_price
             new_notional = new_qty * new_avg
 
-    if abs(new_qty) <= _DUST_QUANTITY:
+    if abs(new_qty) <= DUST_QUANTITY:
         new_book.pop(key, None)
         return new_book
 
@@ -400,15 +418,19 @@ def step_paper_fill_sim(
             data_version=data_version,
             git_commit_hash=git_commit_hash,
             process_clock_drift_vs_binance_ms=clock_drift_ms,
-            data=_fill_to_event_data(fill),
+            data=fill_to_event_data(fill),
         )
         append_event(event, path=event_log_path)
 
     return update_book(book, fills), fills
 
 
-def _fill_to_event_data(fill: SimulatedFill) -> dict:
-    """Flatten SimulatedFill into the event-log ``data`` payload shape."""
+def fill_to_event_data(fill: SimulatedFill) -> dict:
+    """Flatten SimulatedFill into the event-log ``data`` payload shape.
+
+    Inverse of ``fill_from_event_data``. Public so halt (stage [6]) can
+    serialise ``unwind_simulated`` payloads with the identical shape.
+    """
     return {
         "symbol": fill.symbol,
         "market": fill.market,

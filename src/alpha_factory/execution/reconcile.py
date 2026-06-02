@@ -72,6 +72,7 @@ from alpha_factory.execution.event_log import (
     read_events,
 )
 from alpha_factory.execution.fill_sim import (
+    BOOK_AFFECTING_KINDS,
     PositionBook,
     fill_from_event_data,
     update_book,
@@ -186,12 +187,15 @@ def replay_pnl_from_fill_events(
     fill_events: list[dict],
     mark_prices: dict[tuple[str, str], float],
 ) -> float:
-    """Replay PnL from a list of ``fill_simulated`` events.
+    """Replay PnL from a list of book-affecting events.
 
-    Builds a position book from the events (shared ``fill_from_event_data``
-    + ``update_book`` so this matches live replay exactly), marks each
-    surviving position at ``mark_prices[(symbol, market)]``, and subtracts
-    fees paid.
+    Folds BOTH ``fill_simulated`` and ``unwind_simulated`` (halt closures)
+    — see ``fill_sim.BOOK_AFFECTING_KINDS``. A halt-closed position must
+    contribute its closing fees AND zero out its MTM, so the unwind events
+    are not optional here. Builds the book via the shared
+    ``fill_from_event_data`` + ``update_book`` so this matches live replay
+    exactly, marks each surviving position at ``mark_prices[(symbol,
+    market)]``, and subtracts fees paid.
 
         gross_mtm = Σ quantity_base * (mark_price − avg_entry_price)
         pnl       = gross_mtm − Σ fee_paid_quote
@@ -205,7 +209,7 @@ def replay_pnl_from_fill_events(
     book: PositionBook = {}
     total_fees = 0.0
     for ev in fill_events:
-        if ev.get("kind") != "fill_simulated":
+        if ev.get("kind") not in BOOK_AFFECTING_KINDS:
             continue
         fill = fill_from_event_data(ev["data"])
         book = update_book(book, [fill])
