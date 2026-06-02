@@ -197,6 +197,9 @@ QC_RUN_SCHEMA: dict[str, pl.DataType] = {
 SPOT_KLINES_URL = "https://api.binance.com/api/v3/klines"
 FAPI_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
 FAPI_FUNDING_URL = "https://fapi.binance.com/fapi/v1/fundingRate"
+# v2 §2 process_clock_drift_vs_binance_ms source; perp-side time (the
+# market we trade) — paper-trade clock-drift sample queries this.
+FAPI_TIME_URL = "https://fapi.binance.com/fapi/v1/time"
 
 
 # ── Source identifiers (recorded with each row for audit / API drift) ─────
